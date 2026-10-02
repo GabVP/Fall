@@ -1,0 +1,17 @@
+# Ambientes e cache de dependências
+.venv/
+.uv-cache/
+
+# Arquivos gerados pelo Python e por testes
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Artefatos de distribuição
+*.egg-info/
+dist/
+
+# Configuração local e segredos
+.env
+.env.*
+!.env.example
