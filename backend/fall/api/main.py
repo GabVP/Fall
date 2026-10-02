@@ -2,16 +2,16 @@
 
 from fastapi import FastAPI
 
-from fall.bootstrap import build_runtime
-from fall.config import Settings
+from fall.config import Settings, load_settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Monta a API; rotas funcionais entram nos módulos seguintes."""
-    runtime = build_runtime(settings)
-    app = FastAPI(
+    selected_settings = settings if settings is not None else load_settings()
+    documentation = selected_settings.documentation
+    return FastAPI(
         title="Fall API",
-        openapi_url="/openapi.json" if runtime.settings.api_docs_enabled else None,
+        openapi_url="/openapi.json" if documentation.schema else None,
+        docs_url="/docs" if documentation.swagger else None,
+        redoc_url="/redoc" if documentation.redoc else None,
     )
-    app.state.runtime = runtime
-    return app

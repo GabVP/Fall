@@ -14,12 +14,27 @@ class Environment(StrEnum):
 
 
 @dataclass(frozen=True)
+class DocumentationPolicy:
+    schema: bool
+    swagger: bool
+    redoc: bool
+
+
+_DOCUMENTATION_BY_ENVIRONMENT = {
+    Environment.DEVELOPMENT: DocumentationPolicy(schema=True, swagger=True, redoc=True),
+    Environment.TEST: DocumentationPolicy(schema=True, swagger=True, redoc=False),
+    Environment.STAGING: DocumentationPolicy(schema=True, swagger=False, redoc=False),
+    Environment.PRODUCTION: DocumentationPolicy(schema=False, swagger=False, redoc=False),
+}
+
+
+@dataclass(frozen=True)
 class Settings:
     environment: Environment
 
     @property
-    def api_docs_enabled(self) -> bool:
-        return self.environment in {Environment.DEVELOPMENT, Environment.TEST}
+    def documentation(self) -> DocumentationPolicy:
+        return _DOCUMENTATION_BY_ENVIRONMENT[self.environment]
 
 
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:

@@ -23,12 +23,12 @@ O comando cria `.venv/` e instala as dependências de execução e de desenvolvi
 
 Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos são `development`, `test`, `staging` e `production`. Não existe ambiente implícito: um valor ausente ou inválido impede a inicialização. O arquivo `.env.example` mostra somente o nome da variável; a aplicação não carrega esse arquivo automaticamente.
 
-| Perfil | Esquema e interface OpenAPI |
-| --- | --- |
-| `development` | Disponíveis |
-| `test` | Disponíveis |
-| `staging` | Desabilitados |
-| `production` | Desabilitados |
+| Perfil | `/openapi.json` | `/docs` | `/redoc` |
+| --- | --- | --- | --- |
+| `development` | Disponível | Disponível | Disponível |
+| `test` | Disponível | Disponível | Desabilitado |
+| `staging` | Disponível para validação de contrato | Desabilitado | Desabilitado |
+| `production` | Desabilitado | Desabilitado | Desabilitado |
 
 Esta etapa ainda não usa credenciais, banco ou dados financeiros. A exigência e a proteção de segredos dos componentes futuros pertencem aos tickets seguintes.
 
@@ -75,4 +75,4 @@ Os testes mínimos verificam a inicialização da API e do worker e o carregamen
 
 ## Organização
 
-`backend/fall/api` contém o transporte HTTP; `worker` contém o processo de trabalho; `application` receberá casos de uso; `domain` conterá regras financeiras independentes de frameworks; `integrations` e `persistence` receberão os adaptadores externos. `backend/fall/bootstrap.py` é o ponto de composição comum da API e do worker. Os próximos tickets acrescentam serviços, persistência e segurança sem duplicar regras entre processos.
+`backend/fall/api` contém o transporte HTTP; `worker` contém o processo de trabalho; `application` receberá casos de uso; `domain` conterá regras financeiras independentes de frameworks; `integrations` e `persistence` receberão os adaptadores externos. API e worker carregam os mesmos perfis em `backend/fall/config.py`. Os próximos tickets acrescentam serviços de aplicação compartilhados, persistência e segurança sem duplicar regras entre processos.

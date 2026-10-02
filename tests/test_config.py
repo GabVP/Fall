@@ -6,19 +6,19 @@ from fall.config import Environment, load_settings
 
 
 @pytest.mark.parametrize(
-    ("name", "docs_enabled"),
+    ("name", "schema_enabled"),
     [
         ("development", True),
         ("test", True),
-        ("staging", False),
+        ("staging", True),
         ("production", False),
     ],
 )
-def test_loads_an_explicit_environment(name: str, docs_enabled: bool) -> None:
+def test_loads_an_explicit_environment(name: str, schema_enabled: bool) -> None:
     settings = load_settings({"FALL_ENVIRONMENT": name})
 
     assert settings.environment is Environment(name)
-    assert settings.api_docs_enabled is docs_enabled
+    assert settings.documentation.schema is schema_enabled
 
 
 def test_missing_environment_fails_without_implicit_development() -> None:
