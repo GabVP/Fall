@@ -29,7 +29,7 @@ def load_database_url(
         raise ValueError(f"{variable} é obrigatória")
     try:
         url = make_url(raw_url)
-    except ArgumentError:
+    except (ArgumentError, ValueError):
         raise ValueError(f"{variable} deve ser uma URL PostgreSQL válida") from None
     if url.drivername != "postgresql+psycopg" or not url.database:
         raise ValueError(f"{variable} deve usar postgresql+psycopg e informar o banco")

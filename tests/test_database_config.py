@@ -35,7 +35,7 @@ def test_missing_profile_url_fails_even_if_another_profile_is_set() -> None:
         )
 
 
-@pytest.mark.parametrize("invalid", ["secret-sentinel", "sqlite:///secret-sentinel", "postgresql+psycopg://u:secret-sentinel@localhost"])
+@pytest.mark.parametrize("invalid", ["secret-sentinel", "sqlite:///secret-sentinel", "postgresql+psycopg://u:secret-sentinel@localhost", "postgresql+psycopg://u:p@localhost:secret-sentinel/test"])
 def test_invalid_url_is_redacted(invalid: str) -> None:
     with pytest.raises(ValueError) as error:
         load_database_url(Environment.TEST, {"FALL_TEST_DATABASE_URL": invalid})
