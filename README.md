@@ -4,12 +4,13 @@ Aplicação pessoal para centralizar, analisar e visualizar as finanças do usu�
 
 ## Backend: estado atual
 
-Este repositório contém a base executável da API FastAPI e do worker. Ainda não há rotas financeiras, tarefas agendadas, banco de dados ou integração com provedores. As regras de produto e os tickets permanecem fora deste repositório, no diretório pai do workspace original.
+Este repositório contém a base executável da API FastAPI e do worker e a configuração local do PostgreSQL. Ainda não há rotas financeiras, tarefas agendadas ou integração com provedores. As regras de produto e os tickets permanecem fora deste repositório, no diretório pai do workspace original.
 
 ## Pré-requisitos e instalação
 
 - Python 3.11 ou superior.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) para instalar exatamente as versões registradas em `uv.lock`.
+- Docker com Compose para iniciar os bancos locais.
 
 Na raiz deste repositório:
 
@@ -21,7 +22,7 @@ O comando cria `.venv/` e instala as dependências de execução e de desenvolvi
 
 ## Ambientes
 
-Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos são `development`, `test`, `staging` e `production`. Não existe ambiente implícito: um valor ausente ou inválido impede a inicialização. O arquivo `.env.example` mostra somente o nome da variável; a aplicação não carrega esse arquivo automaticamente.
+Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos são `development`, `test`, `staging` e `production`. Não existe ambiente implícito: um valor ausente ou inválido impede a inicialização. O arquivo `.env.example` mostra URLs somente para bancos locais e exemplos sem credenciais reais para outros ambientes; a aplicação não carrega esse arquivo automaticamente.
 
 | Perfil | `/openapi.json` | `/docs` | `/redoc` |
 | --- | --- | --- | --- |
@@ -30,7 +31,25 @@ Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos sã
 | `staging` | Disponível para validação de contrato | Desabilitado | Desabilitado |
 | `production` | Desabilitado | Desabilitado | Desabilitado |
 
-Esta etapa ainda não usa credenciais, banco ou dados financeiros. A exigência e a proteção de segredos dos componentes futuros pertencem aos tickets seguintes.
+As rotas e o worker ainda não usam o banco nem dados financeiros. A exigência e a proteção de segredos dos componentes futuros pertencem aos tickets seguintes.
+
+## PostgreSQL local
+
+O Compose fornece dois bancos distintos, acessíveis somente pelo loopback da máquina. As credenciais em `compose.yaml` servem exclusivamente para desenvolvimento e teste locais. O banco de desenvolvimento mantém um volume nomeado. A imagem PostgreSQL cria um volume anônimo para o banco de teste; para descartar seus dados sem tocar no volume de desenvolvimento, execute `docker compose --profile test rm -sfv postgres-test` e inicie o serviço novamente.
+
+```sh
+docker compose up -d --wait postgres-development
+docker compose --profile test up -d --wait postgres-test
+```
+
+Defina a URL correspondente ao perfil antes de usar persistência. Em PowerShell:
+
+```powershell
+$env:FALL_ENVIRONMENT = "development"
+$env:FALL_DEVELOPMENT_DATABASE_URL = "postgresql+psycopg://fall_local:fall_local_only@127.0.0.1:55432/fall_development"
+```
+
+Para teste, use `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL` apontando para `127.0.0.1:55433/fall_test`. Homologação e produção exigem, respectivamente, `FALL_STAGING_DATABASE_URL` e `FALL_PRODUCTION_DATABASE_URL` com valores providos fora do repositório. A ausência da URL do perfil selecionado ou o uso de outro dialeto causa erro sem expor o valor fornecido.
 
 Em PowerShell:
 
