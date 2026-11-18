@@ -5,12 +5,20 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.types import ASGIApp
 
+from fall.api.correlation import RequestCorrelation
 from fall.config import Settings, load_settings
 from fall.observability import Component, Event, configure_logging
 
 
 _logger = logging.getLogger(__name__)
+
+
+class _CorrelatedAPI(FastAPI):
+    def build_middleware_stack(self) -> ASGIApp:
+        # A camada externa também acompanha respostas do ServerErrorMiddleware.
+        return RequestCorrelation(super().build_middleware_stack())
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -25,7 +33,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _logger.info(Event.API_STARTED, extra={"environment": selected_settings.environment})
         yield
 
-    return FastAPI(
+    return _CorrelatedAPI(
         title="Fall API",
         openapi_url="/openapi.json" if documentation.schema else None,
         docs_url="/docs" if documentation.swagger else None,

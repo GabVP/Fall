@@ -2,11 +2,17 @@
 
 import json
 import logging
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from enum import StrEnum
 from logging.config import dictConfig
+from uuid import UUID
 
 from fall.config import Environment
+
+
+request_id_context: ContextVar[UUID | None] = ContextVar("fall_request_id", default=None)
+run_id_context: ContextVar[UUID | None] = ContextVar("fall_run_id", default=None)
 
 
 class Component(StrEnum):
@@ -16,6 +22,7 @@ class Component(StrEnum):
 
 class Event(StrEnum):
     API_STARTED = "api_started"
+    REQUEST_FINISHED = "request_finished"
     WORKER_STARTED = "worker_started"
 
 
@@ -35,7 +42,7 @@ class _OperationalFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         level = next((name for limit, name in _LEVELS if record.levelno >= limit), "DEBUG")
         event = record.msg.value if isinstance(record.msg, Event) else "runtime_event"
-        fields = {
+        fields: dict[str, str | int] = {
             "timestamp": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": level,
             "component": self.component.value,
@@ -44,6 +51,15 @@ class _OperationalFormatter(logging.Formatter):
         environment = getattr(record, "environment", None)
         if isinstance(environment, Environment):
             fields["environment"] = environment.value
+        status_code = getattr(record, "status_code", None)
+        if type(status_code) is int and 100 <= status_code <= 599:
+            fields["status_code"] = status_code
+        request_id = request_id_context.get()
+        if isinstance(request_id, UUID):
+            fields["request_id"] = request_id.hex
+        run_id = run_id_context.get()
+        if isinstance(run_id, UUID):
+            fields["run_id"] = run_id.hex
         return json.dumps(fields)
 
 

@@ -5,23 +5,39 @@ import os
 import subprocess
 import sys
 from datetime import UTC, datetime
+from uuid import UUID
 
 
 _LOGGING_PROBE = """
+import asyncio
 import logging
 
-from fall.config import Environment
-from fall.observability import Component, Event, configure_logging
+from fall.config import Environment, Settings
+from fall.observability import Component, configure_logging, run_id_context
+from fall.worker.main import run
 
 configure_logging(Component.WORKER)
 configure_logging(Component.WORKER)
-logger = logging.getLogger("fall.worker")
-logger.info(Event.WORKER_STARTED, extra={"environment": Environment.TEST})
+
+async def check_workers():
+    stop = asyncio.Event()
+    settings = Settings(Environment.TEST)
+
+    async def start_worker():
+        await run(settings, stop)
+        assert run_id_context.get() is None
+
+    workers = [asyncio.create_task(start_worker()) for _ in range(2)]
+    await asyncio.sleep(0)
+    stop.set()
+    await asyncio.gather(*workers)
+
+asyncio.run(check_workers())
 
 try:
     raise RuntimeError("exception-sentinel")
 except RuntimeError:
-    logger.exception(
+    logging.getLogger("fall.worker").exception(
         {"token": "message-sentinel"},
         extra={"context": {"payload": "extra-sentinel"}, "environment": "profile-sentinel"},
     )
@@ -39,7 +55,10 @@ from fastapi import Request
 
 from fall.api.main import create_app
 
+failed_request_ids = []
+
 async def fail(request: Request):
+    failed_request_ids.append(request.state.request_id)
     logging.getLogger("dependency").warning(
         "User input %s", await request.body(),
         extra={"token": request.headers["authorization"]},
@@ -72,6 +91,8 @@ async def check_server():
                 headers={"authorization": "Bearer token-sentinel"},
             )
             assert response.status_code == 500
+            assert failed_request_ids == [response.headers["X-Request-ID"]]
+            print(response.headers["X-Request-ID"])
     finally:
         server.should_exit = True
         await server_task
@@ -81,28 +102,38 @@ asyncio.run(check_server())
 
 
 def test_reconfiguring_worker_logging_keeps_one_record_per_event() -> None:
-    records = _read_logs(_LOGGING_PROBE)
+    records, output = _run_probe(_LOGGING_PROBE)
 
-    assert len(records) == 2
-    assert records[0]["component"] == "worker"
-    assert records[0]["event"] == "worker_started"
-    assert records[0]["environment"] == "test"
-    assert records[1]["level"] == "ERROR"
-    assert records[1]["event"] == "runtime_event"
-    assert set(records[1]) == {"timestamp", "level", "component", "event"}
-    assert datetime.fromisoformat(records[1]["timestamp"]).utcoffset() == UTC.utcoffset(None)
+    assert not output
+    assert len(records) == 3
+    first, second, error = records
+    for worker in (first, second):
+        assert worker["component"] == "worker"
+        assert worker["event"] == "worker_started"
+        assert worker["environment"] == "test"
+        assert UUID(worker["run_id"]).version == 4
+    assert first["run_id"] != second["run_id"]
+    assert error["level"] == "ERROR"
+    assert error["event"] == "runtime_event"
+    assert set(error) == {"timestamp", "level", "component", "event"}
+    assert datetime.fromisoformat(error["timestamp"]).utcoffset() == UTC.utcoffset(None)
 
 
 def test_uvicorn_output_omits_request_and_exception_values() -> None:
-    records = _read_logs(_SERVER_PROBE)
+    records, response_request_id = _run_probe(_SERVER_PROBE)
 
     assert all(record["component"] == "api" for record in records)
     assert any(record["event"] == "api_started" for record in records)
-    assert any(record["level"] == "WARNING" for record in records)
     assert any(record["level"] == "ERROR" for record in records)
+    completed, = [record for record in records if record["event"] == "request_finished"]
+    assert completed["status_code"] == 500
+    assert completed["request_id"] == response_request_id
+    assert UUID(completed["request_id"]).version == 4
+    warnings = [record for record in records if record["level"] == "WARNING"]
+    assert warnings and all(record["request_id"] == completed["request_id"] for record in warnings)
 
 
-def _read_logs(probe: str) -> list[dict[str, str]]:
+def _run_probe(probe: str) -> tuple[list[dict[str, str | int]], str]:
     result = subprocess.run(
         [sys.executable, "-c", probe],
         env=os.environ | {"FALL_ENVIRONMENT": "test", "PYTHONIOENCODING": "utf-8"},
@@ -113,7 +144,6 @@ def _read_logs(probe: str) -> list[dict[str, str]]:
     )
 
     assert result.returncode == 0, result.stderr
-    assert not result.stdout
-    assert "-sentinel" not in result.stderr
+    assert "-sentinel" not in result.stdout + result.stderr
     assert "Traceback" not in result.stderr
-    return [json.loads(line) for line in result.stderr.splitlines()]
+    return [json.loads(line) for line in result.stderr.splitlines()], result.stdout.strip()
