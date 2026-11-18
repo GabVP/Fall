@@ -6,6 +6,10 @@ from enum import StrEnum
 from typing import Mapping
 
 
+class ConfigurationError(ValueError):
+    """Falha de configuração com mensagem segura para exibir ao operador."""
+
+
 class Environment(StrEnum):
     DEVELOPMENT = "development"
     TEST = "test"
@@ -42,8 +46,8 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     values = os.environ if environ is None else environ
     name = values.get("FALL_ENVIRONMENT", "")
     try:
-        environment = Environment(name)
+        return Settings(environment=Environment(name))
     except ValueError:
-        choices = ", ".join(profile.value for profile in Environment)
-        raise ValueError(f"FALL_ENVIRONMENT deve ser um destes valores: {choices}") from None
-    return Settings(environment=environment)
+        pass
+    choices = ", ".join(profile.value for profile in Environment)
+    raise ConfigurationError(f"FALL_ENVIRONMENT deve ser um destes valores: {choices}")

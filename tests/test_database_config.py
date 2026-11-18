@@ -2,7 +2,7 @@
 
 import pytest
 
-from fall.config import Environment
+from fall.config import ConfigurationError, Environment
 from fall.persistence.database import create_database_engine, load_database_url
 
 
@@ -37,7 +37,8 @@ def test_missing_profile_url_fails_even_if_another_profile_is_set() -> None:
 
 @pytest.mark.parametrize("invalid", ["secret-sentinel", "sqlite:///secret-sentinel", "postgresql+psycopg://u:secret-sentinel@localhost", "postgresql+psycopg://u:p@localhost:secret-sentinel/test"])
 def test_invalid_url_is_redacted(invalid: str) -> None:
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(ConfigurationError) as error:
         load_database_url(Environment.TEST, {"FALL_TEST_DATABASE_URL": invalid})
 
     assert "secret-sentinel" not in str(error.value)
+    assert error.value.__context__ is None

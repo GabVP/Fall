@@ -31,7 +31,7 @@ Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos sã
 | `staging` | Disponível para validação de contrato | Desabilitado | Desabilitado |
 | `production` | Desabilitado | Desabilitado | Desabilitado |
 
-As rotas e o worker ainda não usam o banco nem dados financeiros. A exigência e a proteção de segredos dos componentes futuros pertencem aos tickets seguintes.
+API e worker exigem somente o perfil nesta etapa. A URL PostgreSQL correspondente é obrigatória nos comandos de migração. Credenciais de sessão e de integrações serão exigidas nos módulos que as utilizarem.
 
 ## PostgreSQL local
 
@@ -49,7 +49,7 @@ $env:FALL_ENVIRONMENT = "development"
 $env:FALL_DEVELOPMENT_DATABASE_URL = "postgresql+psycopg://fall_local:fall_local_only@127.0.0.1:55432/fall_development"
 ```
 
-Para teste, use `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL` apontando para `127.0.0.1:55433/fall_test`. Homologação e produção exigem, respectivamente, `FALL_STAGING_DATABASE_URL` e `FALL_PRODUCTION_DATABASE_URL` com valores providos fora do repositório. A ausência da URL do perfil selecionado ou o uso de outro dialeto causa erro sem expor o valor fornecido.
+Para teste, use `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL` apontando para `127.0.0.1:55433/fall_test`. Homologação e produção exigem, respectivamente, `FALL_STAGING_DATABASE_URL` e `FALL_PRODUCTION_DATABASE_URL` com valores providos fora do repositório. Se a URL do perfil selecionado estiver ausente ou inválida, a migração informa o nome da variável. Se o driver falhar ao abrir a conexão, o comando informa a operação que falhou sem repetir o diagnóstico bruto do driver. O SQLAlchemy oculta a senha na representação padrão da URL, mas pode exibir outros campos e opções. Evite registrar a URL inteira. [Referência do SQLAlchemy](https://docs.sqlalchemy.org/en/21/core/engines.html#sqlalchemy.engine.URL.render_as_string)
 
 ## Migrações
 
@@ -102,11 +102,25 @@ export FALL_ENVIRONMENT=development
 Para executar em outro perfil, substitua o valor antes de iniciar o processo. Use terminais separados para a API e o worker:
 
 ```sh
-uv run --locked uvicorn fall.api.main:create_app --factory --host 127.0.0.1 --port 8000
+uv run --locked uvicorn fall.api.main:create_app --factory --no-access-log --host 127.0.0.1 --port 8000
 uv run --locked fall-worker
 ```
 
 A API de desenvolvimento expõe o esquema em `http://127.0.0.1:8000/openapi.json`. O worker permanece ativo sem tarefas registradas; encerre os processos com `Ctrl+C`.
+
+`GET /health` é público nos quatro perfis e responde `200` com `{"status":"ok"}`. O resultado indica que o processo da API responde a requisições.
+
+A API e o worker emitem logs operacionais JSON em `stderr`. Os campos comuns são `timestamp` em UTC, `level`, `component` e `event`. Eventos de inicialização incluem o nome do perfil. Mensagens de bibliotecas são representadas pelo evento `runtime_event` com seu nível. A saída omite texto livre, argumentos, cabeçalhos, URLs, corpos e tracebacks. Falhas de configuração na inicialização exibem a mensagem segura do validador.
+
+O log de acesso do Uvicorn e a telemetria nativa do FastAPI ficam desabilitados para evitar a captura do caminho bruto, de parâmetros de consulta e de detalhes de exceções. Consulte a [configuração de logging do Uvicorn](https://uvicorn.dev/settings/#logging) e a [configuração de telemetria do FastAPI](https://fastapi.tiangolo.com/advanced/opentelemetry/#choose-what-to-record).
+
+A API gera um identificador opaco para cada requisição HTTP e o devolve em `X-Request-ID`. Procure esse valor como `request_id` no evento `request_finished`, que registra o status HTTP quando há resposta. O worker registra o `run_id` da execução em `worker_started` e, se ela falhar, usa o mesmo ID em `worker_failed`. O contexto `worker_execution()` permite que cada tarefa abra uma execução com seu próprio ID.
+
+## Erros HTTP
+
+As respostas de erro da API incluem `error.code`, `error.message`, `error.request_id` e `error.retryable`. O identificador coincide com o cabeçalho `X-Request-ID`. Entradas inválidas recebem `422 VALIDATION_ERROR`. Falhas inesperadas, inclusive de validação da saída da API, recebem `500 INTERNAL_ERROR`. As mensagens são fixas e omitem o conteúdo recebido e os detalhes da exceção. [Tratamento de erros do FastAPI](https://fastapi.tiangolo.com/tutorial/handling-errors/)
+
+`429 RATE_LIMITED` e `503 SERVICE_UNAVAILABLE` sinalizam que uma nova tentativa pode funcionar. Repetir a operação deve respeitar o cabeçalho `Retry-After`, quando presente, e as garantias de idempotência da rota. Um `500 INTERNAL_ERROR` genérico mantém `retryable` como `false`. A API preserva `WWW-Authenticate` em `401` e `Allow` em `405`.
 
 ## Testes
 
@@ -127,6 +141,14 @@ uv run --locked pytest
 ```
 
 Os testes de configuração, API, worker, portas e convenções de domínio rodam sem PostgreSQL. Os testes de migrações e de roundtrip dos tipos exigem o serviço `postgres-test` ativo e `FALL_TEST_DATABASE_URL` definida como no exemplo acima; sem essa variável, esses testes são marcados como ignorados. Uma URL definida com banco indisponível causa falha. O usuário do banco de teste precisa de permissão para criar e remover bancos temporários (disponível no Compose local). Nenhum teste depende de contas bancárias ou dados financeiros reais.
+
+### Validação integrada da plataforma
+
+1. Em uma cópia limpa, instale as dependências com `uv sync --locked`. Inicie um PostgreSQL de teste isolado e configure `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL`.
+2. Em um banco descartável, execute `alembic upgrade head`, `alembic downgrade base` e `alembic upgrade head` pelo `uv run --locked`. Confirme a revisão com `uv run --locked alembic current`.
+3. Inicie a API e o worker com os comandos acima. Confirme o evento `worker_started` com `run_id`, o `200` em `/health` e o `404` em `/v1/inexistente`. Compare o `request_id` desse erro com o cabeçalho `X-Request-ID` e com o evento `request_finished` da API.
+4. Em um processo separado, confirme que a API e o worker recusam um perfil inválido e que o Alembic recusa a URL obrigatória ausente. Use valores sintéticos para verificar que o diagnóstico omite o valor fornecido.
+5. Execute `uv run --locked pytest -rs` com o banco de teste configurado. O aceite integrado exige que os testes de PostgreSQL sejam executados.
 
 ## Organização
 

@@ -7,7 +7,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 
-from fall.config import Environment
+from fall.config import ConfigurationError, Environment
 
 
 _URL_VARIABLE = {
@@ -26,13 +26,15 @@ def load_database_url(
     variable = _URL_VARIABLE[environment]
     raw_url = values.get(variable, "")
     if not raw_url:
-        raise ValueError(f"{variable} é obrigatória")
+        raise ConfigurationError(f"{variable} é obrigatória")
     try:
         url = make_url(raw_url)
     except (ArgumentError, ValueError):
-        raise ValueError(f"{variable} deve ser uma URL PostgreSQL válida") from None
+        url = None
+    if url is None:
+        raise ConfigurationError(f"{variable} deve ser uma URL PostgreSQL válida")
     if url.drivername != "postgresql+psycopg" or not url.database:
-        raise ValueError(f"{variable} deve usar postgresql+psycopg e informar o banco")
+        raise ConfigurationError(f"{variable} deve usar postgresql+psycopg e informar o banco")
     return url
 
 
