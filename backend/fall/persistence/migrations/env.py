@@ -17,17 +17,17 @@ try:
 except ConfigurationError as error:
     raise CommandError(str(error)) from None
 
-engine = create_database_engine(url)
+engine = None
 try:
     try:
+        engine = create_database_engine(url)
         connection = engine.connect()
     except SQLAlchemyError:
-        connection = None
-    if connection is None:
-        raise CommandError("Não foi possível conectar ao PostgreSQL para executar migrações")
+        raise CommandError("Não foi possível conectar ao PostgreSQL para executar migrações") from None
     with connection:
         context.configure(connection=connection, target_metadata=None)
         with context.begin_transaction():
             context.run_migrations()
 finally:
-    engine.dispose()
+    if engine is not None:
+        engine.dispose()

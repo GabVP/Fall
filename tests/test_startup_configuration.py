@@ -52,6 +52,10 @@ def test_worker_rejects_invalid_environment(environment) -> None:
             f"postgresql+psycopg://user:password@127.0.0.1/fall_test?sslmode={_SENTINEL}",
             "Não foi possível conectar ao PostgreSQL para executar migrações",
         ),
+        (
+            f"postgresql+psycopg://user:password@127.0.0.1/fall_test?plugin={_SENTINEL}",
+            "Não foi possível conectar ao PostgreSQL para executar migrações",
+        ),
     ],
 )
 def test_migration_hides_invalid_connection_configuration(database_url, expected) -> None:
