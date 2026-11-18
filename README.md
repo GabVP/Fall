@@ -51,6 +51,29 @@ $env:FALL_DEVELOPMENT_DATABASE_URL = "postgresql+psycopg://fall_local:fall_local
 
 Para teste, use `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL` apontando para `127.0.0.1:55433/fall_test`. Homologação e produção exigem, respectivamente, `FALL_STAGING_DATABASE_URL` e `FALL_PRODUCTION_DATABASE_URL` com valores providos fora do repositório. A ausência da URL do perfil selecionado ou o uso de outro dialeto causa erro sem expor o valor fornecido.
 
+## Migrações
+
+Alembic usa o perfil em `FALL_ENVIRONMENT` e a URL correspondente. A revisão inicial `0001_baseline` registra o histórico de migração sem criar tabelas financeiras ou de sessão. Com o banco local de desenvolvimento ativo e suas variáveis definidas:
+
+```sh
+uv run --locked alembic upgrade head
+uv run --locked alembic current
+```
+
+Para conferir reversão em um banco descartável, use `uv run --locked alembic downgrade base` e depois `uv run --locked alembic upgrade head`. O teste automatizado cria seu próprio banco temporário no servidor de teste, verifica dois ciclos e o remove ao terminar. Em PowerShell:
+
+```powershell
+$env:FALL_ENVIRONMENT = "test"
+$env:FALL_TEST_DATABASE_URL = "postgresql+psycopg://fall_local:fall_local_only@127.0.0.1:55433/fall_test"
+uv run --locked pytest tests/test_migrations.py
+```
+
+Novas revisões podem ser criadas com `uv run --locked alembic revision -m "descrição"`; o template fornece `upgrade` e `downgrade` para edição e revisão. A configuração não fornece metadados de entidades nem geração automática de tabelas neste estágio. A resolução do diretório de migrações usa a localização do `alembic.ini`.
+
+Selecionar um ambiente escolhe sua variável de URL, mas ainda não comprova a identidade do servidor alcançado. A verificação independente de servidor, banco e papel, com bloqueio de divergências antes de migrar, está prevista no Módulo 14. A primeira migração de homologação ou produção depende dessa proteção, ainda não implementada nesta base.
+
+## Executar API e worker
+
 Em PowerShell:
 
 ```powershell
@@ -90,8 +113,8 @@ export FALL_ENVIRONMENT=test
 uv run --locked pytest
 ```
 
-Os testes mínimos verificam a inicialização da API e do worker e o carregamento dos quatro perfis. Eles não dependem de conta bancária, credenciais ou PostgreSQL.
+Os testes de configuração, API e worker rodam sem PostgreSQL. Os testes de migrações exigem o serviço `postgres-test` ativo e `FALL_TEST_DATABASE_URL` definida como no exemplo acima; sem essa variável, esses testes são marcados como ignorados. Uma URL definida com banco indisponível causa falha. O usuário do banco de teste precisa de permissão para criar e remover bancos temporários (disponível no Compose local). Nenhum teste depende de contas bancárias ou dados financeiros reais.
 
 ## Organização
 
-`backend/fall/api` contém o transporte HTTP; `worker` contém o processo de trabalho; `application` receberá casos de uso; `domain` conterá regras financeiras independentes de frameworks; `integrations` e `persistence` receberão os adaptadores externos. API e worker carregam os mesmos perfis em `backend/fall/config.py`. Os próximos tickets acrescentam serviços de aplicação compartilhados, persistência e segurança sem duplicar regras entre processos.
+`backend/fall/api` contém o transporte HTTP; `worker` contém o processo de trabalho; `application` receberá casos de uso; `domain` receberá regras financeiras; `integrations` receberá adaptadores externos; `persistence` contém a configuração PostgreSQL e as migrações. API e worker carregam os mesmos perfis em `backend/fall/config.py`. Os próximos tickets acrescentam serviços de aplicação compartilhados, entidades e segurança sem duplicar regras entre processos.
