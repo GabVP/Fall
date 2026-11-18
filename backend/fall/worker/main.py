@@ -2,7 +2,7 @@
 
 import asyncio
 
-from fall.config import Settings, load_settings
+from fall.config import ConfigurationError, Settings, load_settings
 
 
 async def run(settings: Settings, stop: asyncio.Event) -> None:
@@ -12,7 +12,10 @@ async def run(settings: Settings, stop: asyncio.Event) -> None:
 
 
 def main() -> None:
-    settings = load_settings()
+    try:
+        settings = load_settings()
+    except ConfigurationError as error:
+        raise SystemExit(str(error)) from None
     try:
         asyncio.run(run(settings, asyncio.Event()))
     except KeyboardInterrupt:

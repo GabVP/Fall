@@ -31,7 +31,7 @@ Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos sã
 | `staging` | Disponível para validação de contrato | Desabilitado | Desabilitado |
 | `production` | Desabilitado | Desabilitado | Desabilitado |
 
-As rotas e o worker ainda não usam o banco nem dados financeiros. A exigência e a proteção de segredos dos componentes futuros pertencem aos tickets seguintes.
+API e worker exigem somente o perfil nesta etapa. A URL PostgreSQL correspondente é obrigatória nos comandos de migração. Credenciais de sessão e de integrações serão exigidas nos módulos que as utilizarem.
 
 ## PostgreSQL local
 
@@ -49,7 +49,7 @@ $env:FALL_ENVIRONMENT = "development"
 $env:FALL_DEVELOPMENT_DATABASE_URL = "postgresql+psycopg://fall_local:fall_local_only@127.0.0.1:55432/fall_development"
 ```
 
-Para teste, use `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL` apontando para `127.0.0.1:55433/fall_test`. Homologação e produção exigem, respectivamente, `FALL_STAGING_DATABASE_URL` e `FALL_PRODUCTION_DATABASE_URL` com valores providos fora do repositório. A ausência da URL do perfil selecionado ou o uso de outro dialeto causa erro sem expor o valor fornecido.
+Para teste, use `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL` apontando para `127.0.0.1:55433/fall_test`. Homologação e produção exigem, respectivamente, `FALL_STAGING_DATABASE_URL` e `FALL_PRODUCTION_DATABASE_URL` com valores providos fora do repositório. Se a URL do perfil selecionado estiver ausente ou inválida, a migração informa o nome da variável. Se o driver falhar ao abrir a conexão, o comando informa a operação que falhou sem repetir o diagnóstico bruto do driver. O SQLAlchemy oculta a senha na representação padrão da URL, mas pode exibir outros campos e opções. Evite registrar a URL inteira. [Referência do SQLAlchemy](https://docs.sqlalchemy.org/en/21/core/engines.html#sqlalchemy.engine.URL.render_as_string)
 
 ## Migrações
 
