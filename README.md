@@ -114,6 +114,12 @@ O log de acesso do Uvicorn e a telemetria nativa do FastAPI ficam desabilitados 
 
 A API gera um identificador opaco para cada requisição HTTP e o devolve em `X-Request-ID`. Procure esse valor como `request_id` no evento `request_finished`, que registra o status HTTP quando há resposta. O worker gera um `run_id` por execução do processo e o registra em `worker_started`.
 
+## Erros HTTP
+
+As respostas de erro da API incluem `error.code`, `error.message`, `error.request_id` e `error.retryable`. O identificador coincide com o cabeçalho `X-Request-ID`. Entradas inválidas recebem `422 VALIDATION_ERROR`. Falhas inesperadas, inclusive de validação da saída da API, recebem `500 INTERNAL_ERROR`. As mensagens são fixas e omitem o conteúdo recebido e os detalhes da exceção. [Tratamento de erros do FastAPI](https://fastapi.tiangolo.com/tutorial/handling-errors/)
+
+`429 RATE_LIMITED` e `503 SERVICE_UNAVAILABLE` sinalizam que uma nova tentativa pode funcionar. Repetir a operação deve respeitar o cabeçalho `Retry-After`, quando presente, e as garantias de idempotência da rota. Um `500 INTERNAL_ERROR` genérico mantém `retryable` como `false`. A API preserva `WWW-Authenticate` em `401` e `Allow` em `405`.
+
 ## Testes
 
 Selecione o perfil de teste e execute a suíte:

@@ -5,9 +5,16 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp
 
 from fall.api.correlation import RequestCorrelation
+from fall.api.errors import (
+    http_exception_response,
+    internal_error_response,
+    request_validation_response,
+)
 from fall.config import Settings, load_settings
 from fall.observability import Component, Event, configure_logging
 
@@ -33,7 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _logger.info(Event.API_STARTED, extra={"environment": selected_settings.environment})
         yield
 
-    return _CorrelatedAPI(
+    app = _CorrelatedAPI(
         title="Fall API",
         openapi_url="/openapi.json" if documentation.schema else None,
         docs_url="/docs" if documentation.swagger else None,
@@ -41,3 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
         telemetry={"tracing": False, "logs": False, "metrics": False, "auto_configure": False},
     )
+    app.add_exception_handler(HTTPException, http_exception_response)
+    app.add_exception_handler(RequestValidationError, request_validation_response)
+    app.add_exception_handler(Exception, internal_error_response)
+    return app

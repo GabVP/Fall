@@ -92,6 +92,14 @@ async def check_server():
             )
             assert response.status_code == 500
             assert failed_request_ids == [response.headers["X-Request-ID"]]
+            assert response.json() == {
+                "error": {
+                    "code": "INTERNAL_ERROR",
+                    "message": "Ocorreu um erro interno.",
+                    "request_id": response.headers["X-Request-ID"],
+                    "retryable": False,
+                },
+            }
             print(response.headers["X-Request-ID"])
     finally:
         server.should_exit = True
