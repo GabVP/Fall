@@ -108,6 +108,8 @@ uv run --locked fall-worker
 
 A API de desenvolvimento expõe o esquema em `http://127.0.0.1:8000/openapi.json`. O worker permanece ativo sem tarefas registradas; encerre os processos com `Ctrl+C`.
 
+`GET /health` é público nos quatro perfis e responde `200` com `{"status":"ok"}`. O resultado indica que o processo da API responde a requisições.
+
 A API e o worker emitem logs operacionais JSON em `stderr`. Os campos comuns são `timestamp` em UTC, `level`, `component` e `event`. Eventos de inicialização incluem o nome do perfil. Mensagens de bibliotecas são representadas pelo evento `runtime_event` com seu nível. A saída omite texto livre, argumentos, cabeçalhos, URLs, corpos e tracebacks. Falhas de configuração na inicialização exibem a mensagem segura do validador.
 
 O log de acesso do Uvicorn e a telemetria nativa do FastAPI ficam desabilitados para evitar a captura do caminho bruto, de parâmetros de consulta e de detalhes de exceções. Consulte a [configuração de logging do Uvicorn](https://uvicorn.dev/settings/#logging) e a [configuração de telemetria do FastAPI](https://fastapi.tiangolo.com/advanced/opentelemetry/#choose-what-to-record).

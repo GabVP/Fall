@@ -51,4 +51,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(HTTPException, http_exception_response)
     app.add_exception_handler(RequestValidationError, request_validation_response)
     app.add_exception_handler(Exception, internal_error_response)
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
     return app

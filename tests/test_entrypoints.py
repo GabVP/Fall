@@ -11,6 +11,17 @@ from fall.config import Environment, Settings
 from fall.worker.main import run
 
 
+@pytest.mark.parametrize("environment", list(Environment))
+def test_health_exposes_only_process_status_without_credentials(environment: Environment) -> None:
+    app = create_app(Settings(environment=environment))
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert response.headers["X-Request-ID"]
+
+
 def test_api_starts_and_publishes_its_schema() -> None:
     app = create_app(Settings(environment=Environment.TEST))
     with TestClient(app) as client:
