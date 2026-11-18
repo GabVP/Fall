@@ -142,6 +142,14 @@ uv run --locked pytest
 
 Os testes de configuração, API, worker, portas e convenções de domínio rodam sem PostgreSQL. Os testes de migrações e de roundtrip dos tipos exigem o serviço `postgres-test` ativo e `FALL_TEST_DATABASE_URL` definida como no exemplo acima; sem essa variável, esses testes são marcados como ignorados. Uma URL definida com banco indisponível causa falha. O usuário do banco de teste precisa de permissão para criar e remover bancos temporários (disponível no Compose local). Nenhum teste depende de contas bancárias ou dados financeiros reais.
 
+### Validação integrada da plataforma
+
+1. Em uma cópia limpa, instale as dependências com `uv sync --locked`. Inicie um PostgreSQL de teste isolado e configure `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL`.
+2. Em um banco descartável, execute `alembic upgrade head`, `alembic downgrade base` e `alembic upgrade head` pelo `uv run --locked`. Confirme a revisão com `uv run --locked alembic current`.
+3. Inicie a API e o worker com os comandos acima. Confirme o evento `worker_started` com `run_id`, o `200` em `/health` e o `404` em `/v1/inexistente`. Compare o `request_id` desse erro com o cabeçalho `X-Request-ID` e com o evento `request_finished` da API.
+4. Em um processo separado, confirme que a API e o worker recusam um perfil inválido e que o Alembic recusa a URL obrigatória ausente. Use valores sintéticos para verificar que o diagnóstico omite o valor fornecido.
+5. Execute `uv run --locked pytest -rs` com o banco de teste configurado. O aceite integrado exige que os testes de PostgreSQL sejam executados.
+
 ## Organização
 
 `backend/fall/api` contém o transporte HTTP; `worker` contém o processo de trabalho; `application` contém portas e receberá casos de uso; `domain` contém convenções monetárias e temporais independentes de frameworks; `integrations` contém o relógio do sistema; `persistence` contém a configuração PostgreSQL, os tipos e as migrações. API e worker carregam os mesmos perfis em `backend/fall/config.py`. Os próximos tickets acrescentam serviços de aplicação compartilhados, entidades e segurança sem duplicar regras entre processos.
