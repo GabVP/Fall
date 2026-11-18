@@ -24,6 +24,7 @@ class Event(StrEnum):
     API_STARTED = "api_started"
     REQUEST_FINISHED = "request_finished"
     WORKER_STARTED = "worker_started"
+    WORKER_FAILED = "worker_failed"
 
 
 _LEVELS = (

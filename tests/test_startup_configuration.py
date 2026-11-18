@@ -7,32 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from fall.api.main import create_app
-from fall.config import ConfigurationError
-
-
 _SENTINEL = "fall-startup-secret-sentinel"
+_API = ("uvicorn", "fall.api.main:create_app", "--factory", "--no-access-log", "--port", "0")
 _WORKER = ("fall.worker.main",)
 _MIGRATION = ("alembic", "upgrade", "head")
 
 
+@pytest.mark.parametrize("command", [_API, _WORKER], ids=["api", "worker"])
 @pytest.mark.parametrize("environment", [None, _SENTINEL])
-def test_api_factory_rejects_invalid_environment(monkeypatch, environment) -> None:
-    if environment is None:
-        monkeypatch.delenv("FALL_ENVIRONMENT", raising=False)
-    else:
-        monkeypatch.setenv("FALL_ENVIRONMENT", environment)
-
-    with pytest.raises(ConfigurationError, match="FALL_ENVIRONMENT") as caught:
-        create_app()
-
-    assert _SENTINEL not in str(caught.value)
-    assert caught.value.__context__ is None
-
-
-@pytest.mark.parametrize("environment", [None, _SENTINEL])
-def test_worker_rejects_invalid_environment(environment) -> None:
-    result = _run(_WORKER, environment=environment)
+def test_process_rejects_invalid_environment(command, environment) -> None:
+    result = _run(command, environment=environment)
 
     assert result.returncode != 0
     assert "FALL_ENVIRONMENT deve ser um destes valores" in result.stderr

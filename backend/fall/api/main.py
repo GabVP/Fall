@@ -15,7 +15,7 @@ from fall.api.errors import (
     internal_error_response,
     request_validation_response,
 )
-from fall.config import Settings, load_settings
+from fall.config import ConfigurationError, Settings, load_settings
 from fall.observability import Component, Event, configure_logging
 
 
@@ -30,14 +30,18 @@ class _CorrelatedAPI(FastAPI):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Monta a API; rotas funcionais entram nos módulos seguintes."""
-    selected_settings = settings if settings is not None else load_settings()
     if settings is None:
+        try:
+            settings = load_settings()
+        except ConfigurationError as error:
+            raise SystemExit(str(error)) from None
         configure_logging(Component.API)
-    documentation = selected_settings.documentation
+    documentation = settings.documentation
+    environment = settings.environment
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        _logger.info(Event.API_STARTED, extra={"environment": selected_settings.environment})
+        _logger.info(Event.API_STARTED, extra={"environment": environment})
         yield
 
     app = _CorrelatedAPI(

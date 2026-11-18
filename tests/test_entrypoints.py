@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 
 from fall.api.main import create_app
 from fall.config import Environment, Settings
-from fall.worker.main import run
+from fall.observability import run_id_context
+from fall.worker.main import run, worker_execution
 
 
 @pytest.mark.parametrize("environment", list(Environment))
@@ -88,3 +89,25 @@ def test_worker_starts_and_stops_without_external_services(caplog) -> None:
     asyncio.run(run(Settings(environment=Environment.TEST), stop))
 
     assert caplog.record_tuples == [("fall.worker.main", logging.INFO, "worker_started")]
+
+
+def test_tasks_in_the_same_worker_keep_independent_run_ids() -> None:
+    async def exercise() -> None:
+        with worker_execution():
+            parent_id = run_id_context.get()
+
+            async def task():
+                with worker_execution():
+                    task_id = run_id_context.get()
+                    await asyncio.sleep(0)
+                    assert run_id_context.get() == task_id
+                assert run_id_context.get() == parent_id
+                return task_id
+
+            first_id, second_id = await asyncio.gather(task(), task())
+            assert None not in {parent_id, first_id, second_id}
+            assert len({parent_id, first_id, second_id}) == 3
+
+        assert run_id_context.get() is None
+
+    asyncio.run(exercise())

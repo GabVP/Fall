@@ -109,6 +109,20 @@ asyncio.run(check_server())
 """
 
 
+_WORKER_FAILURE = """
+from unittest.mock import patch
+
+from fall.worker import main as worker
+
+class FailingStop:
+    async def wait(self):
+        raise RuntimeError("worker-failure-sentinel")
+
+with patch.object(worker.asyncio, "Event", FailingStop):
+    worker.main()
+"""
+
+
 def test_reconfiguring_worker_logging_keeps_one_record_per_event() -> None:
     records, output = _run_probe(_LOGGING_PROBE)
 
@@ -141,7 +155,18 @@ def test_uvicorn_output_omits_request_and_exception_values() -> None:
     assert warnings and all(record["request_id"] == completed["request_id"] for record in warnings)
 
 
-def _run_probe(probe: str) -> tuple[list[dict[str, str | int]], str]:
+def test_worker_failure_exits_without_printing_the_exception() -> None:
+    records, output = _run_probe(_WORKER_FAILURE, exit_code=1)
+
+    assert not output
+    started, failed = records
+    assert started["event"] == "worker_started"
+    assert failed["event"] == "worker_failed"
+    assert failed["level"] == "ERROR"
+    assert started["run_id"] == failed["run_id"]
+
+
+def _run_probe(probe: str, *, exit_code: int = 0) -> tuple[list[dict[str, str | int]], str]:
     result = subprocess.run(
         [sys.executable, "-c", probe],
         env=os.environ | {"FALL_ENVIRONMENT": "test", "PYTHONIOENCODING": "utf-8"},
@@ -151,7 +176,7 @@ def _run_probe(probe: str) -> tuple[list[dict[str, str | int]], str]:
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == exit_code, result.stderr
     assert "-sentinel" not in result.stdout + result.stderr
     assert "Traceback" not in result.stderr
     return [json.loads(line) for line in result.stderr.splitlines()], result.stdout.strip()

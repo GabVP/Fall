@@ -114,7 +114,7 @@ A API e o worker emitem logs operacionais JSON em `stderr`. Os campos comuns sã
 
 O log de acesso do Uvicorn e a telemetria nativa do FastAPI ficam desabilitados para evitar a captura do caminho bruto, de parâmetros de consulta e de detalhes de exceções. Consulte a [configuração de logging do Uvicorn](https://uvicorn.dev/settings/#logging) e a [configuração de telemetria do FastAPI](https://fastapi.tiangolo.com/advanced/opentelemetry/#choose-what-to-record).
 
-A API gera um identificador opaco para cada requisição HTTP e o devolve em `X-Request-ID`. Procure esse valor como `request_id` no evento `request_finished`, que registra o status HTTP quando há resposta. O worker gera um `run_id` por execução do processo e o registra em `worker_started`.
+A API gera um identificador opaco para cada requisição HTTP e o devolve em `X-Request-ID`. Procure esse valor como `request_id` no evento `request_finished`, que registra o status HTTP quando há resposta. O worker registra o `run_id` da execução em `worker_started` e, se ela falhar, usa o mesmo ID em `worker_failed`. O contexto `worker_execution()` permite que cada tarefa abra uma execução com seu próprio ID.
 
 ## Erros HTTP
 
