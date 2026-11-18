@@ -102,11 +102,15 @@ export FALL_ENVIRONMENT=development
 Para executar em outro perfil, substitua o valor antes de iniciar o processo. Use terminais separados para a API e o worker:
 
 ```sh
-uv run --locked uvicorn fall.api.main:create_app --factory --host 127.0.0.1 --port 8000
+uv run --locked uvicorn fall.api.main:create_app --factory --no-access-log --host 127.0.0.1 --port 8000
 uv run --locked fall-worker
 ```
 
 A API de desenvolvimento expõe o esquema em `http://127.0.0.1:8000/openapi.json`. O worker permanece ativo sem tarefas registradas; encerre os processos com `Ctrl+C`.
+
+A API e o worker emitem logs operacionais JSON em `stderr`. Os campos comuns são `timestamp` em UTC, `level`, `component` e `event`. Eventos de inicialização incluem o nome do perfil. Mensagens de bibliotecas são representadas pelo evento `runtime_event` com seu nível. A saída omite texto livre, argumentos, cabeçalhos, URLs, corpos e tracebacks. Falhas de configuração na inicialização exibem a mensagem segura do validador.
+
+O log de acesso do Uvicorn e a telemetria nativa do FastAPI ficam desabilitados para evitar a captura do caminho bruto, de parâmetros de consulta e de detalhes de exceções. Consulte a [configuração de logging do Uvicorn](https://uvicorn.dev/settings/#logging) e a [configuração de telemetria do FastAPI](https://fastapi.tiangolo.com/advanced/opentelemetry/#choose-what-to-record).
 
 ## Testes
 

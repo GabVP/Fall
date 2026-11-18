@@ -1,6 +1,7 @@
 """Verifica os pontos de entrada sem acessar serviços externos."""
 
 import asyncio
+import logging
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +18,16 @@ def test_api_starts_and_publishes_its_schema() -> None:
 
     assert response.status_code == 200
     assert response.json()["info"]["title"] == "Fall API"
+
+
+def test_api_with_injected_settings_preserves_host_logging() -> None:
+    root = logging.getLogger()
+    handlers = root.handlers.copy()
+    level = root.level
+
+    with TestClient(create_app(Settings(environment=Environment.TEST))):
+        assert root.handlers == handlers
+        assert root.level == level
 
 
 def test_production_api_hides_documentation() -> None:
@@ -58,10 +69,11 @@ def test_redoc_availability_depends_on_profile(
     assert response.status_code == expected_status
 
 
-def test_worker_starts_and_stops_without_external_services(capsys) -> None:
+def test_worker_starts_and_stops_without_external_services(caplog) -> None:
+    caplog.set_level(logging.INFO)
     stop = asyncio.Event()
     stop.set()
 
     asyncio.run(run(Settings(environment=Environment.TEST), stop))
 
-    assert capsys.readouterr().out == "Fall worker started (test); no jobs registered\n"
+    assert caplog.record_tuples == [("fall.worker.main", logging.INFO, "worker_started")]
