@@ -57,19 +57,19 @@ Para teste, use `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL` apontando par
 
 ## Migrações
 
-Alembic usa o perfil em `FALL_ENVIRONMENT` e a URL correspondente. A revisão inicial `0001_baseline` registra o histórico de migração sem criar tabelas financeiras ou de sessão. Com o banco local de desenvolvimento ativo e suas variáveis definidas:
+Alembic usa o perfil em `FALL_ENVIRONMENT` e a URL correspondente. A revisão `0001_baseline` registra o histórico inicial. A revisão `0002_access` cria `users` e `sessions`. Com o banco local de desenvolvimento ativo e suas variáveis definidas:
 
 ```sh
 uv run --locked alembic upgrade head
 uv run --locked alembic current
 ```
 
-Para conferir reversão em um banco descartável, use `uv run --locked alembic downgrade base` e depois `uv run --locked alembic upgrade head`. O teste automatizado cria seu próprio banco temporário no servidor de teste, verifica dois ciclos e o remove ao terminar. Em PowerShell:
+Para conferir reversão em um banco descartável, use `uv run --locked alembic downgrade 0001_baseline` e depois `uv run --locked alembic upgrade head`. O downgrade remove os dados de `sessions` e `users` junto com suas tabelas. Os testes usam bancos temporários no servidor de teste e cobrem reversão, reaplicação, integridade e criação concorrente. Em PowerShell:
 
 ```powershell
 $env:FALL_ENVIRONMENT = "test"
 $env:FALL_TEST_DATABASE_URL = "postgresql+psycopg://fall_local:fall_local_only@127.0.0.1:55433/fall_test"
-uv run --locked pytest tests/test_migrations.py
+uv run --locked pytest tests/test_migrations.py tests/test_access_persistence.py
 ```
 
 Novas revisões podem ser criadas com `uv run --locked alembic revision -m "descrição"`; o template fornece `upgrade` e `downgrade` para edição e revisão. A configuração não fornece metadados de entidades nem geração automática de tabelas neste estágio. A resolução do diretório de migrações usa a localização do `alembic.ini`.

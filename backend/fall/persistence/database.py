@@ -40,4 +40,4 @@ def load_database_url(
 
 def create_database_engine(url: URL) -> Engine:
     """Cria o adaptador; a conexão efetiva ocorre quando uma operação a utiliza."""
-    return create_engine(url, pool_pre_ping=True)
+    return create_engine(url, pool_pre_ping=True, hide_parameters=True)
