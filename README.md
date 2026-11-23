@@ -31,7 +31,11 @@ Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos sã
 | `staging` | Disponível para validação de contrato | Desabilitado | Desabilitado |
 | `production` | Desabilitado | Desabilitado | Desabilitado |
 
-API e worker exigem somente o perfil nesta etapa. A URL PostgreSQL correspondente é obrigatória nos comandos de migração. Credenciais de sessão e de integrações serão exigidas nos módulos que as utilizarem.
+API e worker exigem somente o perfil nesta etapa. A URL PostgreSQL correspondente é obrigatória nos comandos de migração. Credenciais de integrações serão exigidas nos módulos que as utilizarem.
+
+## Contratos de acesso
+
+`fall.api.access` define os formatos de credenciais, emissão de sessão e identificação do usuário. `fall.application.access` define as portas de usuário, sessão, hash de senha e material de sessão. As operações temporais usam `Clock` para trabalhar com instantes UTC. Os formatos HTTP podem ser exercitados em testes sem banco. O token será opaco e revogável no servidor, com resumo SHA-256 persistido e sem configuração de chave de assinatura.
 
 ## PostgreSQL local
 
