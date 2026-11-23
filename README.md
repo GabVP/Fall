@@ -37,6 +37,18 @@ API e worker exigem somente o perfil nesta etapa. A URL PostgreSQL correspondent
 
 `fall.api.access` define os formatos de credenciais, emissão de sessão e identificação do usuário. `fall.application.access` define as portas de usuário, sessão, hash de senha e material de sessão. As operações temporais usam `Clock` para trabalhar com instantes UTC. Os formatos HTTP podem ser exercitados em testes sem banco. O token será opaco e revogável no servidor, com resumo SHA-256 persistido e sem configuração de chave de assinatura.
 
+## Provisionar o usuário
+
+Depois de instalar as dependências e aplicar a migração `0002_access`, use o mesmo `FALL_ENVIRONMENT` e a URL PostgreSQL correspondente. Em um terminal interativo, execute o comando com seu login no lugar de `usuario-exemplo`.
+
+```sh
+uv run --locked fall-provision-user --login usuario-exemplo
+```
+
+Digite a senha e confirme nos dois prompts sem eco. O comando aceita somente o login como argumento e recusa entrada redirecionada ou leitura com eco. O PostgreSQL armazena o hash Argon2id com salt. O login diferencia maiúsculas e preserva espaços.
+
+Uma execução bem-sucedida retorna código `0`. Uma senha vazia, confirmação divergente, falha operacional ou tentativa com login já reservado ou com um usuário ativo retorna `1` e uma mensagem segura. Uso inválido do comando retorna `2`. Uma tentativa em conflito conserva o registro existente.
+
 ## PostgreSQL local
 
 O Compose fornece dois bancos distintos, acessíveis somente pelo loopback da máquina. As credenciais em `compose.yaml` servem exclusivamente para desenvolvimento e teste locais. O banco de desenvolvimento mantém um volume nomeado. A imagem PostgreSQL cria um volume anônimo para o banco de teste; para descartar seus dados sem tocar no volume de desenvolvimento, execute `docker compose --profile test rm -sfv postgres-test` e inicie o serviço novamente.
