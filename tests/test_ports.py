@@ -1,8 +1,12 @@
 """Caso de uso sintético executável só com portas e doubles em memória."""
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
+import pytest
+
+from fall.application.access import NewSession, UserCredentials
 from fall.application.ports import Clock, Repository
 
 
@@ -41,3 +45,24 @@ def test_use_case_uses_injected_persistence_and_time() -> None:
     notes.save(Note("synthetic", datetime(2025, 1, 1, tzinfo=timezone.utc)))
     touch_note("synthetic", notes, FixedClock())
     assert notes.get("synthetic").updated_at == FixedClock().now()
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        UserCredentials(
+            user_id=UUID(int=1),
+            password_hash="credential-sentinel",
+            is_active=True,
+        ),
+        NewSession(
+            id=UUID(int=2),
+            user_id=UUID(int=1),
+            token_digest=b"credential-sentinel",
+            created_at=FixedClock().now(),
+            absolute_expires_at=FixedClock().now() + timedelta(hours=8),
+        ),
+    ],
+)
+def test_access_record_repr_omits_credentials(record: UserCredentials | NewSession) -> None:
+    assert "credential-sentinel" not in repr(record)

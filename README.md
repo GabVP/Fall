@@ -31,7 +31,23 @@ Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos sã
 | `staging` | Disponível para validação de contrato | Desabilitado | Desabilitado |
 | `production` | Desabilitado | Desabilitado | Desabilitado |
 
-API e worker exigem somente o perfil nesta etapa. A URL PostgreSQL correspondente é obrigatória nos comandos de migração. Credenciais de sessão e de integrações serão exigidas nos módulos que as utilizarem.
+API e worker exigem somente o perfil nesta etapa. A URL PostgreSQL correspondente é obrigatória nos comandos de migração. Credenciais de integrações serão exigidas nos módulos que as utilizarem.
+
+## Contratos de acesso
+
+`fall.api.access` define os formatos de credenciais, emissão de sessão e identificação do usuário. `fall.application.access` define as portas de usuário, sessão, hash de senha e material de sessão. As operações temporais usam `Clock` para trabalhar com instantes UTC. Os formatos HTTP podem ser exercitados em testes sem banco. O token será opaco e revogável no servidor, com resumo SHA-256 persistido e sem configuração de chave de assinatura.
+
+## Provisionar o usuário
+
+Depois de instalar as dependências e aplicar a migração `0002_access`, use o mesmo `FALL_ENVIRONMENT` e a URL PostgreSQL correspondente. Em um terminal interativo, execute o comando com seu login no lugar de `usuario-exemplo`.
+
+```sh
+uv run --locked fall-provision-user --login usuario-exemplo
+```
+
+Digite a senha e confirme nos dois prompts sem eco. O comando aceita somente o login como argumento e recusa entrada redirecionada ou leitura com eco. O PostgreSQL armazena o hash Argon2id com salt. O login diferencia maiúsculas e preserva espaços.
+
+Uma execução bem-sucedida retorna código `0`. Uma senha vazia, confirmação divergente, falha operacional ou tentativa com login já reservado ou com um usuário ativo retorna `1` e uma mensagem segura. Uso inválido do comando retorna `2`. Uma tentativa em conflito conserva o registro existente.
 
 ## PostgreSQL local
 
@@ -53,19 +69,19 @@ Para teste, use `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL` apontando par
 
 ## Migrações
 
-Alembic usa o perfil em `FALL_ENVIRONMENT` e a URL correspondente. A revisão inicial `0001_baseline` registra o histórico de migração sem criar tabelas financeiras ou de sessão. Com o banco local de desenvolvimento ativo e suas variáveis definidas:
+Alembic usa o perfil em `FALL_ENVIRONMENT` e a URL correspondente. A revisão `0001_baseline` registra o histórico inicial. A revisão `0002_access` cria `users` e `sessions`. Com o banco local de desenvolvimento ativo e suas variáveis definidas:
 
 ```sh
 uv run --locked alembic upgrade head
 uv run --locked alembic current
 ```
 
-Para conferir reversão em um banco descartável, use `uv run --locked alembic downgrade base` e depois `uv run --locked alembic upgrade head`. O teste automatizado cria seu próprio banco temporário no servidor de teste, verifica dois ciclos e o remove ao terminar. Em PowerShell:
+Para conferir reversão em um banco descartável, use `uv run --locked alembic downgrade 0001_baseline` e depois `uv run --locked alembic upgrade head`. O downgrade remove os dados de `sessions` e `users` junto com suas tabelas. Os testes usam bancos temporários no servidor de teste e cobrem reversão, reaplicação, integridade e criação concorrente. Em PowerShell:
 
 ```powershell
 $env:FALL_ENVIRONMENT = "test"
 $env:FALL_TEST_DATABASE_URL = "postgresql+psycopg://fall_local:fall_local_only@127.0.0.1:55433/fall_test"
-uv run --locked pytest tests/test_migrations.py
+uv run --locked pytest tests/test_migrations.py tests/test_access_persistence.py
 ```
 
 Novas revisões podem ser criadas com `uv run --locked alembic revision -m "descrição"`; o template fornece `upgrade` e `downgrade` para edição e revisão. A configuração não fornece metadados de entidades nem geração automática de tabelas neste estágio. A resolução do diretório de migrações usa a localização do `alembic.ini`.

@@ -1,4 +1,4 @@
-"""Ciclo da revisão inicial em um PostgreSQL descartável."""
+"""Ciclo de migrações em um PostgreSQL descartável."""
 
 from pathlib import Path
 from shutil import copytree
@@ -18,38 +18,44 @@ def test_new_revision_can_be_generated_from_the_template(tmp_path) -> None:
     copytree(root / "backend/fall/persistence/migrations", scripts)
     config = Config(str(root / "alembic.ini"))
     config.set_main_option("script_location", str(scripts))
+    previous_head = ScriptDirectory.from_config(config).get_current_head()
     revision = command.revision(config, message="synthetic template check")
-    assert revision.down_revision == "0001_baseline"
+    assert revision.down_revision == previous_head
     assert callable(revision.module.upgrade)
     assert callable(revision.module.downgrade)
     assert ScriptDirectory.from_config(config).get_current_head() == revision.revision
 
 
-def test_initial_revision_round_trip_preserves_existing_data(
+def test_access_revision_round_trip_preserves_unrelated_data(
     disposable_database, monkeypatch
 ) -> None:
     monkeypatch.setenv("FALL_ENVIRONMENT", "test")
     config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
     engine = create_database_engine(disposable_database)
     try:
-        command.upgrade(config, "head")
+        command.upgrade(config, "0001_baseline")
         with engine.connect() as connection:
             assert MigrationContext.configure(connection).get_current_revision() == "0001_baseline"
             assert inspect(connection).get_table_names() == ["alembic_version"]
 
         with engine.begin() as connection:
-            connection.execute(text("CREATE TABLE migration_probe (id integer PRIMARY KEY, note text NOT NULL)"))
-            connection.execute(text("INSERT INTO migration_probe (id, note) VALUES (1, 'synthetic')"))
+            connection.execute(text("CREATE TABLE migration_probe (note text NOT NULL)"))
+            connection.execute(text("INSERT INTO migration_probe (note) VALUES ('synthetic')"))
 
-        for _ in range(2):
-            command.downgrade(config, "base")
-            with engine.connect() as connection:
-                assert MigrationContext.configure(connection).get_current_revision() is None
-                assert connection.scalar(text("SELECT note FROM migration_probe WHERE id = 1")) == "synthetic"
-
+        for target in ("0001_baseline", "base"):
             command.upgrade(config, "head")
             with engine.connect() as connection:
-                assert MigrationContext.configure(connection).get_current_revision() == "0001_baseline"
-                assert connection.scalar(text("SELECT note FROM migration_probe WHERE id = 1")) == "synthetic"
+                assert set(inspect(connection).get_table_names()) == {
+                    "alembic_version", "migration_probe", "sessions", "users"
+                }
+                assert connection.scalar(text("SELECT note FROM migration_probe")) == "synthetic"
+
+            command.downgrade(config, target)
+            with engine.connect() as connection:
+                assert set(inspect(connection).get_table_names()) == {"alembic_version", "migration_probe"}
+                assert MigrationContext.configure(connection).get_current_revision() == (
+                    "0001_baseline" if target == "0001_baseline" else None
+                )
+                assert connection.scalar(text("SELECT note FROM migration_probe")) == "synthetic"
     finally:
         engine.dispose()
