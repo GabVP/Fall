@@ -4,7 +4,7 @@ Aplicação pessoal para centralizar, analisar e visualizar as finanças do usu�
 
 ## Backend: estado atual
 
-Este repositório contém a base executável da API FastAPI e do worker e a configuração local do PostgreSQL. Ainda não há rotas financeiras, tarefas agendadas ou integração com provedores. As regras de produto e os tickets permanecem fora deste repositório, no diretório pai do workspace original.
+Este repositório contém a API FastAPI com login e emissão de sessão, a base executável do worker e a configuração local do PostgreSQL. Ainda não há rotas financeiras, tarefas agendadas ou integração com provedores. As regras de produto e os tickets permanecem fora deste repositório, no diretório pai do workspace original.
 
 ## Pré-requisitos e instalação
 
@@ -31,11 +31,17 @@ Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos sã
 | `staging` | Disponível para validação de contrato | Desabilitado | Desabilitado |
 | `production` | Desabilitado | Desabilitado | Desabilitado |
 
-API e worker exigem somente o perfil nesta etapa. A URL PostgreSQL correspondente é obrigatória nos comandos de migração. Credenciais de integrações serão exigidas nos módulos que as utilizarem.
+API e worker exigem o perfil para iniciar. A URL PostgreSQL correspondente é obrigatória nos comandos de migração e ao processar login. Saúde e documentação não abrem conexão ao banco. Credenciais de integrações serão exigidas nos módulos que as utilizarem.
 
 ## Contratos de acesso
 
-`fall.api.access` define os formatos de credenciais, emissão de sessão e identificação do usuário. `fall.application.access` define as portas de usuário, sessão, hash de senha e material de sessão. As operações temporais usam `Clock` para trabalhar com instantes UTC. Os formatos HTTP podem ser exercitados em testes sem banco. O token será opaco e revogável no servidor, com resumo SHA-256 persistido e sem configuração de chave de assinatura.
+`fall.api.access` expõe `POST /v1/sessions` e define os formatos de credenciais, emissão de sessão e identificação do usuário. `fall.application.access` define as portas de usuário, sessão, hash de senha e material de sessão. `fall.application.sessions.create_session` autentica o usuário ativo e cria uma sessão usando essas portas e `Clock`, sem depender do transporte ou do PostgreSQL.
+
+Após provisionar o usuário e aplicar as migrações, envie JSON com exatamente `login` e `password`, ambos strings não vazias. O login tem até 128 caracteres, rejeita NUL e preserva maiúsculas e espaços, assim como a senha. O sucesso retorna `200`, `Cache-Control: no-store` e somente `access_token`, `token_type: "Bearer"` e `absolute_expires_at` em UTC, oito horas após o login. O servidor gera 32 bytes aleatórios em Base64URL e persiste somente o resumo SHA-256 do token, sem chave de assinatura. O token completo é entregue somente nessa resposta.
+
+Senha incorreta, login desconhecido e usuário inativo retornam o mesmo `401 AUTHENTICATION_REQUIRED`, sem criar sessão. Entrada inválida retorna `422 VALIDATION_ERROR`; falhas de persistência ou verificação retornam `500 INTERNAL_ERROR`. Os erros usam o envelope comum e o mesmo identificador de correlação do cabeçalho `X-Request-ID`, sem credenciais ou material interno.
+
+Este incremento cobre emissão de sessão. A validação de tokens recebidos, a expiração efetiva por 15 minutos de inatividade ou oito horas absolutas, a atualização de atividade, a revogação e as rotas `/v1/me` e de logout permanecem nos próximos blocos e tickets. O adaptador de resumo é consumido aqui somente com tokens recém-emitidos; ele ainda não deve ser usado como validador de entrada externa.
 
 ## Provisionar o usuário
 
