@@ -17,15 +17,22 @@ from alembic.config import Config
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from fall.api.access import CurrentUser, SessionGrant
 from fall.api.main import create_app
 from fall.application.access import SessionTokens
 from fall.application.ports import Clock
+from fall.application.sessions import authenticate_session
 from fall.config import Environment, Settings
 from fall.integrations.clock import SystemClock
 from fall.integrations.passwords import Argon2PasswordHasher
-from fall.persistence.access import PostgresUserRepository
+from fall.integrations.session_tokens import OpaqueSessionTokens
+from fall.persistence.access import (
+    AccessPersistenceError,
+    PostgresSessionRepository,
+    PostgresUserRepository,
+)
 from fall.persistence.database import create_database_engine
 
 
@@ -332,3 +339,274 @@ def test_login_server_logs_omit_credentials_and_internal_material(session_databa
     assert [record["request_id"] for record in finished] == request_ids
     for record in records:
         assert set(record) <= {"timestamp", "level", "component", "event", "environment", "status_code", "request_id"}
+
+
+class _MutableClock:
+    def __init__(self, instant: datetime):
+        self.instant = instant
+
+    def now(self) -> datetime:
+        return self.instant
+
+
+@pytest.fixture
+async def issued_session(session_database, client):
+    engine, user_id, _ = session_database
+    response = await client.post("/v1/sessions", json={"login": _LOGIN, "password": _PASSWORD})
+    assert response.status_code == 200
+    return engine, user_id, response.json()["access_token"]
+
+
+def _authenticate(token, engine, clock):
+    return authenticate_session(
+        token,
+        sessions=PostgresSessionRepository(engine),
+        tokens=OpaqueSessionTokens(),
+        clock=clock,
+    )
+
+
+async def test_valid_session_records_authenticated_activity(issued_session):
+    engine, user_id, token = issued_session
+    instant = _FixedClock().now() + timedelta(minutes=1)
+
+    assert _authenticate(token, engine, _MutableClock(instant)) == user_id
+
+    with engine.connect() as connection:
+        activity = connection.scalar(text("SELECT last_seen_at FROM sessions"))
+    assert activity == instant
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "valid"),
+    [
+        (timedelta(minutes=15) - timedelta(microseconds=1), True),
+        (timedelta(minutes=15), False),
+        (timedelta(minutes=15, microseconds=1), False),
+    ],
+)
+async def test_session_idle_limit_is_exclusive(issued_session, elapsed, valid):
+    engine, user_id, token = issued_session
+    instant = _FixedClock().now() + elapsed
+
+    owner = _authenticate(token, engine, _MutableClock(instant))
+
+    assert owner == (user_id if valid else None)
+    with engine.connect() as connection:
+        activity = connection.scalar(text("SELECT last_seen_at FROM sessions"))
+    assert activity == (instant if valid else _FixedClock().now())
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "valid"),
+    [
+        (timedelta(hours=8) - timedelta(microseconds=1), True),
+        (timedelta(hours=8), False),
+        (timedelta(hours=8, microseconds=1), False),
+    ],
+)
+async def test_session_absolute_limit_is_exclusive(issued_session, elapsed, valid):
+    engine, user_id, token = issued_session
+    recent_activity = _FixedClock().now() + timedelta(hours=7, minutes=59)
+    with engine.begin() as connection:
+        connection.execute(
+            text("UPDATE sessions SET last_seen_at = :instant"), {"instant": recent_activity}
+        )
+    instant = _FixedClock().now() + elapsed
+
+    owner = _authenticate(token, engine, _MutableClock(instant))
+
+    assert owner == (user_id if valid else None)
+    with engine.connect() as connection:
+        session = connection.execute(text("SELECT * FROM sessions")).mappings().one()
+    assert session["last_seen_at"] == (instant if valid else recent_activity)
+    assert session["absolute_expires_at"] == _FixedClock().now() + timedelta(hours=8)
+
+
+@pytest.mark.parametrize("state", ["inactive", "revoked"])
+async def test_unavailable_session_cannot_record_activity(issued_session, state):
+    engine, _, token = issued_session
+    with engine.begin() as connection:
+        if state == "inactive":
+            connection.execute(text("UPDATE users SET is_active = false"))
+        else:
+            connection.execute(
+                text("UPDATE sessions SET revoked_at = :instant"),
+                {"instant": _FixedClock().now()},
+            )
+
+    assert _authenticate(
+        token, engine, _MutableClock(_FixedClock().now() + timedelta(minutes=1))
+    ) is None
+
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT last_seen_at FROM sessions")) == _FixedClock().now()
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        None, "", "short", "a" * 42, "a" * 44,
+        "a" * 42 + "=", "a" * 42 + "é", "a" * 42 + "B",
+        "a" * 42 + "/", "a" * 42 + "\n", " " + "a" * 42,
+    ],
+)
+def test_malformed_session_token_is_rejected_without_database(disposable_database, token):
+    engine = create_database_engine(disposable_database)
+    try:
+        assert _authenticate(token, engine, _MutableClock(_FixedClock().now())) is None
+    finally:
+        engine.dispose()
+
+
+async def test_authenticated_activity_never_moves_backwards(issued_session):
+    engine, user_id, token = issued_session
+    latest = _FixedClock().now() + timedelta(minutes=2)
+    clock = _MutableClock(latest)
+    assert _authenticate(token, engine, clock) == user_id
+    clock.instant -= timedelta(minutes=1)
+
+    assert _authenticate(token, engine, clock) == user_id
+
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT last_seen_at FROM sessions")) == latest
+
+
+@pytest.mark.parametrize("unavailable_table", ["users", "sessions"])
+async def test_session_validation_preserves_safe_infrastructure_errors(
+    issued_session, unavailable_table
+):
+    engine, _, token = issued_session
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE {unavailable_table} RENAME TO unavailable"))
+
+    with pytest.raises(AccessPersistenceError) as failure:
+        _authenticate(token, engine, _MutableClock(_FixedClock().now()))
+
+    error = failure.value
+    assert str(error) == "Não foi possível validar a sessão."
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert token not in str(error)
+    assert "SELECT" not in str(error)
+
+
+@pytest.mark.parametrize("altered", [False, True])
+async def test_unknown_session_token_cannot_record_activity(issued_session, altered):
+    engine, _, token = issued_session
+    if altered:
+        rejected = ("A" if token[0] != "A" else "B") + token[1:]
+    else:
+        rejected = OpaqueSessionTokens().issue()
+
+    assert _authenticate(
+        rejected, engine, _MutableClock(_FixedClock().now() + timedelta(minutes=1))
+    ) is None
+
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT last_seen_at FROM sessions")) == _FixedClock().now()
+
+
+async def test_repeated_activity_cannot_extend_the_absolute_expiration(issued_session):
+    engine, user_id, token = issued_session
+    clock = _MutableClock(_FixedClock().now())
+    for minute in range(14, 480, 14):
+        clock.instant = _FixedClock().now() + timedelta(minutes=minute)
+        assert _authenticate(token, engine, clock) == user_id
+    clock.instant = _FixedClock().now() + timedelta(hours=8) - timedelta(microseconds=1)
+    assert _authenticate(token, engine, clock) == user_id
+    clock.instant += timedelta(microseconds=1)
+
+    assert _authenticate(token, engine, clock) is None
+
+    with engine.connect() as connection:
+        session = connection.execute(text("SELECT * FROM sessions")).mappings().one()
+    assert session["absolute_expires_at"] == _FixedClock().now() + timedelta(hours=8)
+    assert session["last_seen_at"] == clock.instant - timedelta(microseconds=1)
+
+
+@pytest.mark.parametrize("path", ["/health", "/openapi.json", "/v1/sessions"])
+async def test_public_request_cannot_record_session_activity(
+    issued_session, client, monkeypatch, path
+):
+    engine, _, token = issued_session
+    instant = _FixedClock().now() + timedelta(minutes=1)
+    monkeypatch.setattr(SystemClock, "now", lambda self: instant)
+    headers = {"Authorization": f"Bearer {token}"}
+    if path == "/v1/sessions":
+        response = await client.post(
+            path, headers=headers, json={"login": _LOGIN, "password": "wrong-sentinel"}
+        )
+        assert response.status_code == 401
+    else:
+        response = await client.get(path, headers=headers)
+        assert response.status_code == 200
+
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT last_seen_at FROM sessions")) == _FixedClock().now()
+
+
+async def test_expired_session_requires_another_password_login(issued_session, client, monkeypatch):
+    engine, user_id, old_token = issued_session
+    clock = _MutableClock(_FixedClock().now() + timedelta(minutes=15))
+    assert _authenticate(old_token, engine, clock) is None
+    monkeypatch.setattr(SystemClock, "now", lambda self: clock.now())
+    rejected = await client.post(
+        "/v1/sessions", json={"login": _LOGIN, "password": "wrong-sentinel"}
+    )
+    assert rejected.status_code == 401
+
+    response = await client.post("/v1/sessions", json={"login": _LOGIN, "password": _PASSWORD})
+
+    assert response.status_code == 200
+    new_token = response.json()["access_token"]
+    assert new_token != old_token
+    assert _authenticate(new_token, engine, clock) == user_id
+    assert _authenticate(old_token, engine, clock) is None
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM sessions")) == 2
+
+
+async def test_session_clock_is_read_after_both_rows_are_locked(issued_session):
+    engine, user_id, token = issued_session
+    checked = []
+
+    class LockCheckingClock:
+        def now(self):
+            for table in ("sessions", "users"):
+                with engine.connect() as connection:
+                    with pytest.raises(OperationalError) as locked:
+                        connection.execute(text(f"SELECT id FROM {table} FOR UPDATE NOWAIT"))
+                    assert locked.value.orig.sqlstate == "55P03"
+                checked.append(table)
+            return _FixedClock().now() + timedelta(minutes=1)
+
+    assert _authenticate(token, engine, LockCheckingClock()) == user_id
+    assert checked == ["sessions", "users"]
+
+
+async def test_session_idle_expiration_uses_elapsed_time_across_dst(
+    session_database, disposable_database, client, monkeypatch
+):
+    login_at = datetime(2026, 10, 25, 0, 50, tzinfo=timezone.utc)
+    monkeypatch.setattr(SystemClock, "now", lambda self: login_at)
+    response = await client.post("/v1/sessions", json={"login": _LOGIN, "password": _PASSWORD})
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+    engine = create_database_engine(
+        disposable_database.update_query_dict({"options": "-c timezone=Europe/London"})
+    )
+    try:
+        with engine.connect() as connection:
+            assert connection.scalar(text("SHOW TimeZone")) == "Europe/London"
+            previous_activity = connection.scalar(text("SELECT last_seen_at FROM sessions"))
+        assert previous_activity.utcoffset() == timedelta(hours=1)
+        now = login_at + timedelta(minutes=20)
+
+        assert _authenticate(token, engine, _MutableClock(now)) is None
+
+        with engine.connect() as connection:
+            activity = connection.scalar(text("SELECT last_seen_at FROM sessions"))
+        assert activity.astimezone(timezone.utc) == login_at
+    finally:
+        engine.dispose()

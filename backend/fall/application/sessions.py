@@ -1,8 +1,8 @@
-"""Autentica as credenciais e persiste uma nova sessão."""
+"""Emite sessões e valida sua atividade pela interface de aplicação."""
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fall.application.access import (
     NewSession,
@@ -43,3 +43,21 @@ def create_session(
     if not sessions.create(NewSession(uuid4(), user.user_id, digest, created_at, expires_at)):
         return None
     return IssuedSession(token, expires_at)
+
+
+def authenticate_session(
+    token: str | None,
+    *,
+    sessions: SessionRepository,
+    tokens: SessionTokens,
+    clock: Clock,
+) -> UUID | None:
+    """Retorna o proprietário apenas após validar e registrar a atividade."""
+    if token is None:
+        return None
+    digest = tokens.digest(token)
+    if digest is None:
+        return None
+    return sessions.authenticate_and_touch(
+        digest, clock=clock, idle_timeout=timedelta(minutes=15)
+    )

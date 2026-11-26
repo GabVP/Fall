@@ -41,7 +41,11 @@ Após provisionar o usuário e aplicar as migrações, envie JSON com exatamente
 
 Senha incorreta, login desconhecido e usuário inativo retornam o mesmo `401 AUTHENTICATION_REQUIRED`, sem criar sessão. Entrada inválida retorna `422 VALIDATION_ERROR`; falhas de persistência ou verificação retornam `500 INTERNAL_ERROR`. Os erros usam o envelope comum e o mesmo identificador de correlação do cabeçalho `X-Request-ID`, sem credenciais ou material interno.
 
-Este incremento cobre emissão de sessão. A validação de tokens recebidos, a expiração efetiva por 15 minutos de inatividade ou oito horas absolutas, a atualização de atividade, a revogação e as rotas `/v1/me` e de logout permanecem nos próximos blocos e tickets. O adaptador de resumo é consumido aqui somente com tokens recém-emitidos; ele ainda não deve ser usado como validador de entrada externa.
+`fall.application.sessions.authenticate_session` recebe um token e retorna somente o UUID do proprietário quando a sessão está válida, ou `None` para autenticação recusada. O adaptador aceita somente o formato Base64URL canônico de 32 bytes emitido pelo servidor, sem padding. Token ausente ou malformado é recusado antes de consultar persistência; tokens desconhecidos ou adulterados, usuário inativo e sessão revogada também são recusados. Falhas de persistência continuam sendo erros operacionais seguros, distintos de uma credencial inválida.
+
+O repositório valida a sessão e atualiza a atividade na mesma transação. Obtém os bloqueios da sessão e do usuário antes de consultar `Clock`, recusa os instantes iguais ou posteriores a 15 minutos da última atividade ou oito horas do login e avança somente `last_seen_at`, sem regressão ou alteração do prazo absoluto. Atividade repetida não prolonga o limite absoluto; após expirar, é necessário outro login com senha.
+
+Neste incremento a validação é uma interface de aplicação, ainda sem proteção HTTP obrigatória. Saúde, documentação e tentativas de login não renovam sessões existentes. A operação de revogação e os testes completos de concorrência ficam no próximo bloco; a proteção HTTP, `/v1/me` e logout ficam no ticket seguinte. Não há refresh token.
 
 ## Provisionar o usuário
 
