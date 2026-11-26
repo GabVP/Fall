@@ -45,7 +45,11 @@ Senha incorreta, login desconhecido e usuário inativo retornam o mesmo `401 AUT
 
 O repositório valida a sessão e atualiza a atividade na mesma transação. Obtém os bloqueios da sessão e do usuário antes de consultar `Clock`, recusa os instantes iguais ou posteriores a 15 minutos da última atividade ou oito horas do login e avança somente `last_seen_at`, sem regressão ou alteração do prazo absoluto. Atividade repetida não prolonga o limite absoluto; após expirar, é necessário outro login com senha.
 
-Neste incremento a validação é uma interface de aplicação, ainda sem proteção HTTP obrigatória. Saúde, documentação e tentativas de login não renovam sessões existentes. A operação de revogação e os testes completos de concorrência ficam no próximo bloco; a proteção HTTP, `/v1/me` e logout ficam no ticket seguinte. Não há refresh token.
+`fall.application.sessions.revoke_session` revoga somente a sessão válida apresentada e retorna `True` após persistir a revogação. Retorna `False` para token ausente, malformado, desconhecido ou sessão inelegível segundo os mesmos limites da validação. Falhas de infraestrutura são lançadas como erros operacionais seguros. Uma nova instância observa a revogação, e outras sessões continuam independentes.
+
+Validação e revogação compartilham a seleção com bloqueios e elegibilidade temporal. Toque e revogação concorrentes são serializados por sessão: revogação persistida não é desfeita, atividade não regride e o prazo absoluto permanece imutável. O relógio é consultado após a espera pelos bloqueios; uma sessão que expirou nessa espera é recusada. Os testes observam contenção real em PostgreSQL e cobrem as duas ordens entre toque e revogação e atualizações concorrentes de atividade.
+
+Neste incremento validação e revogação são interfaces de aplicação. Saúde, documentação e tentativas de login não renovam sessões existentes. A proteção HTTP obrigatória, `/v1/me` e logout ficam no ticket seguinte. Não há refresh token.
 
 ## Provisionar o usuário
 

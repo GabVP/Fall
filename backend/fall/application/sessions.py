@@ -61,3 +61,21 @@ def authenticate_session(
     return sessions.authenticate_and_touch(
         digest, clock=clock, idle_timeout=timedelta(minutes=15)
     )
+
+
+def revoke_session(
+    token: str | None,
+    *,
+    sessions: SessionRepository,
+    tokens: SessionTokens,
+    clock: Clock,
+) -> bool:
+    """Revoga somente a sessão válida apresentada; falhas de persistência são lançadas."""
+    if token is None:
+        return False
+    digest = tokens.digest(token)
+    if digest is None:
+        return False
+    return sessions.revoke_current(
+        digest, clock=clock, idle_timeout=timedelta(minutes=15)
+    )

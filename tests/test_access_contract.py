@@ -6,9 +6,12 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event
+from time import monotonic
 from uuid import UUID, uuid4
 
 import pytest
@@ -23,7 +26,7 @@ from fall.api.access import CurrentUser, SessionGrant
 from fall.api.main import create_app
 from fall.application.access import SessionTokens
 from fall.application.ports import Clock
-from fall.application.sessions import authenticate_session
+from fall.application.sessions import authenticate_session, revoke_session
 from fall.config import Environment, Settings
 from fall.integrations.clock import SystemClock
 from fall.integrations.passwords import Argon2PasswordHasher
@@ -610,3 +613,198 @@ async def test_session_idle_expiration_uses_elapsed_time_across_dst(
         assert activity.astimezone(timezone.utc) == login_at
     finally:
         engine.dispose()
+
+
+def _revoke(token, engine, clock):
+    return revoke_session(
+        token, sessions=PostgresSessionRepository(engine),
+        tokens=OpaqueSessionTokens(), clock=clock,
+    )
+
+
+async def test_revocation_is_observed_by_a_new_application_instance(
+    issued_session, disposable_database
+):
+    engine, _, token = issued_session
+    instant = _FixedClock().now() + timedelta(minutes=1)
+    assert _revoke(token, engine, _MutableClock(instant)) is True
+    new_engine = create_database_engine(disposable_database)
+    try:
+        assert _authenticate(token, new_engine, _MutableClock(instant)) is None
+        with new_engine.connect() as connection:
+            row = connection.execute(text("SELECT * FROM sessions")).mappings().one()
+        assert row["revoked_at"] == instant
+        assert row["last_seen_at"] == _FixedClock().now()
+        assert row["absolute_expires_at"] == _FixedClock().now() + timedelta(hours=8)
+    finally:
+        new_engine.dispose()
+
+
+@pytest.mark.parametrize("state", ["unknown", "inactive", "revoked", "idle", "absolute"])
+async def test_revocation_refuses_an_ineligible_session(issued_session, state):
+    engine, _, token = issued_session
+    instant = _FixedClock().now() + timedelta(minutes=1)
+    with engine.begin() as connection:
+        if state == "inactive":
+            connection.execute(text("UPDATE users SET is_active = false"))
+        elif state == "revoked":
+            connection.execute(text("UPDATE sessions SET revoked_at = :instant"),
+                               {"instant": _FixedClock().now()})
+    if state == "unknown":
+        token = OpaqueSessionTokens().issue()
+    elif state == "idle":
+        instant = _FixedClock().now() + timedelta(minutes=15)
+    elif state == "absolute":
+        instant = _FixedClock().now() + timedelta(hours=8)
+        with engine.begin() as connection:
+            connection.execute(text("UPDATE sessions SET last_seen_at = :instant"),
+                               {"instant": instant - timedelta(minutes=1)})
+    with engine.connect() as connection:
+        before = dict(connection.execute(text("SELECT * FROM sessions")).mappings().one())
+
+    assert _revoke(token, engine, _MutableClock(instant)) is False
+
+    with engine.connect() as connection:
+        assert dict(connection.execute(text("SELECT * FROM sessions")).mappings().one()) == before
+
+
+@pytest.mark.parametrize("token", [None, "", "malformed", "a" * 42 + "é"])
+def test_revocation_refuses_malformed_token_without_query(disposable_database, token):
+    engine = create_database_engine(disposable_database)
+    try:
+        assert _revoke(token, engine, _MutableClock(_FixedClock().now())) is False
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("table", ["sessions", "users"])
+async def test_revocation_preserves_safe_infrastructure_errors(issued_session, table):
+    engine, _, token = issued_session
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE {table} RENAME TO unavailable"))
+    with pytest.raises(AccessPersistenceError) as failure:
+        _revoke(token, engine, _MutableClock(_FixedClock().now()))
+    assert str(failure.value) == "Não foi possível revogar a sessão."
+    assert failure.value.__context__ is None
+    assert failure.value.__cause__ is None
+
+
+async def test_revocation_preserves_another_session(issued_session, client):
+    engine, user_id, token = issued_session
+    response = await client.post("/v1/sessions", json={"login": _LOGIN, "password": _PASSWORD})
+    other_token = response.json()["access_token"]
+    instant = _FixedClock().now() + timedelta(minutes=1)
+    assert _revoke(token, engine, _MutableClock(instant)) is True
+    assert _authenticate(other_token, engine, _MutableClock(instant)) == user_id
+    assert _authenticate(token, engine, _MutableClock(instant)) is None
+
+
+class _BlockingClock(_MutableClock):
+    def __init__(self, instant):
+        super().__init__(instant)
+        self.locked = Event()
+        self.release = Event()
+
+    def now(self):
+        self.locked.set()
+        assert self.release.wait(10), "A operação não liberou o relógio controlado."
+        return self.instant
+
+
+def _wait_for_session_lock(engine):
+    deadline = monotonic() + 10
+    polling_interval = Event()
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as monitor:
+        while monotonic() < deadline:
+            waiting = monitor.scalar(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_stat_activity
+                    WHERE datname = current_database() AND pid <> pg_backend_pid()
+                      AND wait_event_type = 'Lock'
+                      AND query LIKE '%FROM sessions JOIN users%'
+                )
+            """))
+            if waiting:
+                return
+            polling_interval.wait(0.01)
+    pytest.fail("A segunda operação não aguardou o bloqueio da sessão.")
+
+
+@pytest.mark.parametrize("first_operation", ["revoke", "touch"])
+async def test_concurrent_activity_cannot_undo_revocation(issued_session, first_operation):
+    engine, user_id, token = issued_session
+    first_clock = _BlockingClock(_FixedClock().now() + timedelta(minutes=1))
+    second_clock = _MutableClock(_FixedClock().now() + timedelta(minutes=2))
+    first_call = _revoke if first_operation == "revoke" else _authenticate
+    second_call = _authenticate if first_operation == "revoke" else _revoke
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(first_call, token, engine, first_clock)
+        try:
+            assert first_clock.locked.wait(10)
+            second = pool.submit(second_call, token, engine, second_clock)
+            _wait_for_session_lock(engine)
+        finally:
+            first_clock.release.set()
+        assert first.result(timeout=10) == (True if first_operation == "revoke" else user_id)
+        assert second.result(timeout=10) == (None if first_operation == "revoke" else True)
+    assert _authenticate(token, engine, second_clock) is None
+    with engine.connect() as connection:
+        session = connection.execute(text("SELECT * FROM sessions")).mappings().one()
+    assert session["revoked_at"] == (
+        first_clock.instant if first_operation == "revoke" else second_clock.instant
+    )
+    assert session["last_seen_at"] == (
+        _FixedClock().now() if first_operation == "revoke" else first_clock.instant
+    )
+    assert session["absolute_expires_at"] == _FixedClock().now() + timedelta(hours=8)
+
+
+async def test_concurrent_activity_preserves_the_latest_instant(issued_session):
+    engine, user_id, token = issued_session
+    first_clock = _BlockingClock(_FixedClock().now() + timedelta(minutes=2))
+    second_clock = _MutableClock(_FixedClock().now() + timedelta(minutes=1))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(_authenticate, token, engine, first_clock)
+        try:
+            assert first_clock.locked.wait(10)
+            second = pool.submit(_authenticate, token, engine, second_clock)
+            _wait_for_session_lock(engine)
+        finally:
+            first_clock.release.set()
+        assert first.result(timeout=10) == user_id
+        assert second.result(timeout=10) == user_id
+    with engine.connect() as connection:
+        session = connection.execute(text("SELECT * FROM sessions")).mappings().one()
+    assert session["last_seen_at"] == first_clock.instant
+    assert session["absolute_expires_at"] == _FixedClock().now() + timedelta(hours=8)
+
+
+@pytest.mark.parametrize("operation", ["touch", "revoke"])
+@pytest.mark.parametrize("limit", ["idle", "absolute"])
+async def test_session_expiring_while_waiting_cannot_be_reactivated(
+    issued_session, operation, limit
+):
+    engine, _, token = issued_session
+    boundary = _FixedClock().now() + (
+        timedelta(minutes=15) if limit == "idle" else timedelta(hours=8)
+    )
+    if limit == "absolute":
+        with engine.begin() as connection:
+            connection.execute(text("UPDATE sessions SET last_seen_at = :instant"),
+                               {"instant": boundary - timedelta(minutes=1)})
+    with engine.connect() as connection:
+        before = dict(connection.execute(text("SELECT * FROM sessions")).mappings().one())
+    clock = _MutableClock(boundary - timedelta(microseconds=1))
+    call = _authenticate if operation == "touch" else _revoke
+    with engine.begin() as blocker:
+        blocker.execute(text("SELECT id FROM sessions FOR UPDATE"))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(call, token, engine, clock)
+            try:
+                _wait_for_session_lock(engine)
+                clock.instant = boundary
+            finally:
+                blocker.commit()
+            assert future.result(timeout=10) is (None if operation == "touch" else False)
+    with engine.connect() as connection:
+        assert dict(connection.execute(text("SELECT * FROM sessions")).mappings().one()) == before
