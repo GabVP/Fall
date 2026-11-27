@@ -1,13 +1,15 @@
-"""Repositórios PostgreSQL de usuários e criação de sessões."""
+"""Repositórios PostgreSQL de usuários e atividade de sessões."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from psycopg.errors import UniqueViolation
-from sqlalchemy import Engine, bindparam, text
+from sqlalchemy import Connection, Engine, RowMapping, bindparam, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from fall.application.access import NewSession, UserCredentials
+from fall.application.ports import Clock
+from fall.domain.time import as_utc
 from fall.persistence.types import UTCInstant
 
 
@@ -30,10 +32,44 @@ _CREATE_SESSION = text("""
     bindparam("created_at", type_=UTCInstant()),
     bindparam("absolute_expires_at", type_=UTCInstant()),
 )
+_LOCK_SESSION = text("""
+    SELECT sessions.id, sessions.user_id, sessions.last_seen_at,
+           sessions.absolute_expires_at, sessions.revoked_at, users.is_active
+    FROM sessions JOIN users ON users.id = sessions.user_id
+    WHERE sessions.token_digest = :token_digest
+    FOR UPDATE OF sessions FOR SHARE OF users
+""").columns(
+    last_seen_at=UTCInstant(),
+    absolute_expires_at=UTCInstant(),
+    revoked_at=UTCInstant(),
+)
+_TOUCH_SESSION = text("""
+    UPDATE sessions SET last_seen_at = GREATEST(last_seen_at, :instant) WHERE id = :id
+""").bindparams(bindparam("instant", type_=UTCInstant()))
+_REVOKE_SESSION = text("""
+    UPDATE sessions SET revoked_at = :instant WHERE id = :id
+""").bindparams(bindparam("instant", type_=UTCInstant()))
 
 
 class AccessPersistenceError(RuntimeError):
     """Falha de acesso ao banco com mensagem pública fixa."""
+
+
+def _lock_eligible_session(
+    connection: Connection, token_digest: bytes, clock: Clock, idle_timeout: timedelta
+) -> tuple[RowMapping, datetime] | None:
+    session = connection.execute(
+        _LOCK_SESSION, {"token_digest": token_digest}
+    ).mappings().one_or_none()
+    if session is None or not session["is_active"] or session["revoked_at"] is not None:
+        return None
+    instant = as_utc(clock.now())
+    if (
+        instant >= session["last_seen_at"] + idle_timeout
+        or instant >= session["absolute_expires_at"]
+    ):
+        return None
+    return session, instant
 
 
 class PostgresUserRepository:
@@ -100,3 +136,33 @@ class PostgresSessionRepository:
         else:
             return session_id is not None
         raise AccessPersistenceError("Não foi possível criar a sessão.")
+
+    def authenticate_and_touch(
+        self, token_digest: bytes, *, clock: Clock, idle_timeout: timedelta
+    ) -> UUID | None:
+        try:
+            with self._engine.begin() as connection:
+                eligible = _lock_eligible_session(connection, token_digest, clock, idle_timeout)
+                if eligible is None:
+                    return None
+                session, instant = eligible
+                connection.execute(_TOUCH_SESSION, {"id": session["id"], "instant": instant})
+                return session["user_id"]
+        except SQLAlchemyError:
+            pass
+        raise AccessPersistenceError("Não foi possível validar a sessão.")
+
+    def revoke_current(
+        self, token_digest: bytes, *, clock: Clock, idle_timeout: timedelta
+    ) -> bool:
+        try:
+            with self._engine.begin() as connection:
+                eligible = _lock_eligible_session(connection, token_digest, clock, idle_timeout)
+                if eligible is None:
+                    return False
+                session, instant = eligible
+                connection.execute(_REVOKE_SESSION, {"id": session["id"], "instant": instant})
+                return True
+        except SQLAlchemyError:
+            pass
+        raise AccessPersistenceError("Não foi possível revogar a sessão.")

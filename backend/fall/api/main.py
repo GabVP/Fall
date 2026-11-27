@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp
 
+from fall.api.access import router as access_router
 from fall.api.correlation import RequestCorrelation
 from fall.api.errors import (
     http_exception_response,
@@ -29,7 +30,7 @@ class _CorrelatedAPI(FastAPI):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    """Monta a API; rotas funcionais entram nos módulos seguintes."""
+    """Monta a API e os adaptadores das rotas de acesso."""
     if settings is None:
         try:
             settings = load_settings()
@@ -55,6 +56,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(HTTPException, http_exception_response)
     app.add_exception_handler(RequestValidationError, request_validation_response)
     app.add_exception_handler(Exception, internal_error_response)
+    app.state.settings = settings
+    app.include_router(access_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

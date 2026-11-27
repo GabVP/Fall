@@ -4,7 +4,7 @@ Aplicação pessoal para centralizar, analisar e visualizar as finanças do usu�
 
 ## Backend: estado atual
 
-Este repositório contém a base executável da API FastAPI e do worker e a configuração local do PostgreSQL. Ainda não há rotas financeiras, tarefas agendadas ou integração com provedores. As regras de produto e os tickets permanecem fora deste repositório, no diretório pai do workspace original.
+Este repositório contém a API FastAPI com login e emissão de sessão, a base executável do worker e a configuração local do PostgreSQL. Ainda não há rotas financeiras, tarefas agendadas ou integração com provedores. As regras de produto e os tickets permanecem fora deste repositório, no diretório pai do workspace original.
 
 ## Pré-requisitos e instalação
 
@@ -31,11 +31,25 @@ Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos sã
 | `staging` | Disponível para validação de contrato | Desabilitado | Desabilitado |
 | `production` | Desabilitado | Desabilitado | Desabilitado |
 
-API e worker exigem somente o perfil nesta etapa. A URL PostgreSQL correspondente é obrigatória nos comandos de migração. Credenciais de integrações serão exigidas nos módulos que as utilizarem.
+API e worker exigem o perfil para iniciar. A URL PostgreSQL correspondente é obrigatória nos comandos de migração e ao processar login. Saúde e documentação não abrem conexão ao banco. Credenciais de integrações serão exigidas nos módulos que as utilizarem.
 
 ## Contratos de acesso
 
-`fall.api.access` define os formatos de credenciais, emissão de sessão e identificação do usuário. `fall.application.access` define as portas de usuário, sessão, hash de senha e material de sessão. As operações temporais usam `Clock` para trabalhar com instantes UTC. Os formatos HTTP podem ser exercitados em testes sem banco. O token será opaco e revogável no servidor, com resumo SHA-256 persistido e sem configuração de chave de assinatura.
+`fall.api.access` expõe `POST /v1/sessions` e define os formatos de credenciais, emissão de sessão e identificação do usuário. `fall.application.access` define as portas de usuário, sessão, hash de senha e material de sessão. `fall.application.sessions.create_session` autentica o usuário ativo e cria uma sessão usando essas portas e `Clock`, sem depender do transporte ou do PostgreSQL.
+
+Após provisionar o usuário e aplicar as migrações, envie JSON com exatamente `login` e `password`, ambos strings não vazias. O login tem até 128 caracteres, rejeita NUL e preserva maiúsculas e espaços, assim como a senha. O sucesso retorna `200`, `Cache-Control: no-store` e somente `access_token`, `token_type: "Bearer"` e `absolute_expires_at` em UTC, oito horas após o login. O servidor gera 32 bytes aleatórios em Base64URL e persiste somente o resumo SHA-256 do token, sem chave de assinatura. O token completo é entregue somente nessa resposta.
+
+Senha incorreta, login desconhecido e usuário inativo retornam o mesmo `401 AUTHENTICATION_REQUIRED`, sem criar sessão. Entrada inválida retorna `422 VALIDATION_ERROR`; falhas de persistência ou verificação retornam `500 INTERNAL_ERROR`. Os erros usam o envelope comum e o mesmo identificador de correlação do cabeçalho `X-Request-ID`, sem credenciais ou material interno.
+
+`fall.application.sessions.authenticate_session` recebe um token e retorna somente o UUID do proprietário quando a sessão está válida, ou `None` para autenticação recusada. O adaptador aceita somente o formato Base64URL canônico de 32 bytes emitido pelo servidor, sem padding. Token ausente ou malformado é recusado antes de consultar persistência; tokens desconhecidos ou adulterados, usuário inativo e sessão revogada também são recusados. Falhas de persistência continuam sendo erros operacionais seguros, distintos de uma credencial inválida.
+
+O repositório valida a sessão e atualiza a atividade na mesma transação. Obtém os bloqueios da sessão e do usuário antes de consultar `Clock`, recusa os instantes iguais ou posteriores a 15 minutos da última atividade ou oito horas do login e avança somente `last_seen_at`, sem regressão ou alteração do prazo absoluto. Atividade repetida não prolonga o limite absoluto; após expirar, é necessário outro login com senha.
+
+`fall.application.sessions.revoke_session` revoga somente a sessão válida apresentada e retorna `True` após persistir a revogação. Retorna `False` para token ausente, malformado, desconhecido ou sessão inelegível segundo os mesmos limites da validação. Falhas de infraestrutura são lançadas como erros operacionais seguros. Uma nova instância observa a revogação, e outras sessões continuam independentes.
+
+Validação e revogação compartilham a seleção com bloqueios e elegibilidade temporal. Toque e revogação concorrentes são serializados por sessão: revogação persistida não é desfeita, atividade não regride e o prazo absoluto permanece imutável. O relógio é consultado após a espera pelos bloqueios; uma sessão que expirou nessa espera é recusada. Os testes observam contenção real em PostgreSQL e cobrem as duas ordens entre toque e revogação e atualizações concorrentes de atividade.
+
+Neste incremento validação e revogação são interfaces de aplicação. Saúde, documentação e tentativas de login não renovam sessões existentes. A proteção HTTP obrigatória, `/v1/me` e logout ficam no ticket seguinte. Não há refresh token.
 
 ## Provisionar o usuário
 
