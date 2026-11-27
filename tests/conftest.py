@@ -10,6 +10,13 @@ from fall.persistence.database import create_database_engine, load_database_url
 
 
 @pytest.fixture
+def authenticated_headers(monkeypatch):
+    """Isola testes HTTP de outras responsabilidades da persistência de sessão."""
+    monkeypatch.setattr("fall.api.authentication._authenticate", lambda token, settings: uuid4())
+    return {"Authorization": "Bearer synthetic-test-token"}
+
+
+@pytest.fixture
 def disposable_database(monkeypatch):
     if not os.environ.get("FALL_TEST_DATABASE_URL"):
         pytest.skip("Defina FALL_TEST_DATABASE_URL para o teste PostgreSQL")

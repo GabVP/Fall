@@ -52,6 +52,8 @@ import warnings
 import httpx
 import uvicorn
 from fastapi import Request
+from uuid import uuid4
+from unittest.mock import patch
 
 from fall.api.main import create_app
 
@@ -105,7 +107,8 @@ async def check_server():
         server.should_exit = True
         await server_task
 
-asyncio.run(check_server())
+with patch("fall.api.authentication._authenticate", return_value=uuid4()):
+    asyncio.run(check_server())
 """
 
 
