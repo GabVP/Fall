@@ -11,8 +11,9 @@ Entity = TypeVar("Entity")
 class Repository(Protocol[Key, Entity]):
     """Lê por identidade e salva; a unidade de trabalho define o commit externo.
 
-    Repositórios concretos dos próximos módulos definirão escopo de proprietário
-    e operações específicas. Ausência é None; falhas de persistência são erros.
+    Para dados privados, repositórios concretos devem exigir um OwnerScope e
+    filtrar toda leitura e mutação por seu proprietário. Ausência é None;
+    falhas de persistência são erros.
     """
 
     def get(self, key: Key) -> Entity | None: ...

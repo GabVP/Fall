@@ -13,7 +13,7 @@ from fall.api.main import create_app
 from fall.config import Environment, Settings
 
 
-def test_routing_errors_use_the_common_envelope() -> None:
+def test_routing_errors_use_the_common_envelope(authenticated_headers) -> None:
     app = create_app(Settings(Environment.TEST))
 
     async def exercise(client: AsyncClient) -> None:
@@ -22,7 +22,7 @@ def test_routing_errors_use_the_common_envelope() -> None:
         _assert_error(method_error, 405, "METHOD_NOT_ALLOWED", retryable=False)
         assert "GET" in method_error.headers["Allow"]
 
-    _exercise(app, exercise)
+    _exercise(app, exercise, authenticated_headers)
 
 
 @pytest.mark.parametrize(
@@ -33,7 +33,7 @@ def test_routing_errors_use_the_common_envelope() -> None:
         (503, "SERVICE_UNAVAILABLE", True, "Retry-After", "60"),
     ],
 )
-def test_expected_errors_keep_protocol_headers(status, code, retryable, header, value) -> None:
+def test_expected_errors_keep_protocol_headers(status, code, retryable, header, value, authenticated_headers) -> None:
     app = create_app(Settings(Environment.TEST))
 
     @app.get("/v1/probe")
@@ -50,10 +50,10 @@ def test_expected_errors_keep_protocol_headers(status, code, retryable, header, 
         assert response.headers[header] == value
         assert "X-Diagnostic" not in response.headers
 
-    _exercise(app, exercise)
+    _exercise(app, exercise, authenticated_headers)
 
 
-def test_validation_distinguishes_bad_input_from_bad_server_output() -> None:
+def test_validation_distinguishes_bad_input_from_bad_server_output(authenticated_headers) -> None:
     app = create_app(Settings(Environment.TEST))
 
     @app.post("/v1/probe", response_model=int)
@@ -74,13 +74,13 @@ def test_validation_distinguishes_bad_input_from_bad_server_output() -> None:
             retryable=False,
         )
 
-    _exercise(app, exercise)
+    _exercise(app, exercise, authenticated_headers)
 
 
-def _exercise(app: ASGIApp, exercise: Callable[[AsyncClient], Awaitable[None]]) -> None:
+def _exercise(app: ASGIApp, exercise: Callable[[AsyncClient], Awaitable[None]], headers) -> None:
     async def run() -> None:
         transport = ASGITransport(app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as client:
             await exercise(client)
 
     asyncio.run(run())

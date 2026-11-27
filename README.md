@@ -31,7 +31,7 @@ Defina `FALL_ENVIRONMENT` antes de iniciar cada processo. Os valores aceitos sã
 | `staging` | Disponível para validação de contrato | Desabilitado | Desabilitado |
 | `production` | Desabilitado | Desabilitado | Desabilitado |
 
-API e worker exigem o perfil para iniciar. A URL PostgreSQL correspondente é obrigatória nos comandos de migração e ao processar login. Saúde e documentação não abrem conexão ao banco. Credenciais de integrações serão exigidas nos módulos que as utilizarem.
+API e worker exigem o perfil para iniciar. A URL PostgreSQL correspondente é obrigatória nos comandos de migração, no login e na validação de uma sessão com token bem formado. Saúde não abre conexão ao banco. A documentação disponível exige sessão e, portanto, valida a sessão no banco; documentação desabilitada permanece indisponível mesmo com sessão válida. Credenciais de integrações serão exigidas nos módulos que as utilizarem.
 
 ## Contratos de acesso
 
@@ -49,7 +49,9 @@ O repositório valida a sessão e atualiza a atividade na mesma transação. Obt
 
 Validação e revogação compartilham a seleção com bloqueios e elegibilidade temporal. Toque e revogação concorrentes são serializados por sessão: revogação persistida não é desfeita, atividade não regride e o prazo absoluto permanece imutável. O relógio é consultado após a espera pelos bloqueios; uma sessão que expirou nessa espera é recusada. Os testes observam contenção real em PostgreSQL e cobrem as duas ordens entre toque e revogação e atualizações concorrentes de atividade.
 
-Neste incremento validação e revogação são interfaces de aplicação. Saúde, documentação e tentativas de login não renovam sessões existentes. A proteção HTTP obrigatória, `/v1/me` e logout ficam no ticket seguinte. Não há refresh token.
+A API exige `Authorization: Bearer <token>` em todas as requisições HTTP, inclusive ao esquema e às interfaces de documentação habilitadas. Somente `GET /health` e `POST /v1/sessions` são públicos; métodos e caminhos alternativos não são exceções. A validação ocorre antes do roteamento, inclusive para recursos inexistentes e métodos não permitidos. Saúde e tentativas de login não renovam sessões existentes. Uma requisição autenticada, mesmo quando termina em erro de roteamento ou validação, renova a atividade; tokens recusados não a renovam. A ausência ou rejeição do token retorna `401` e `WWW-Authenticate: Bearer`, e falhas de infraestrutura preservam o erro seguro `500`.
+
+Para consultar `/openapi.json`, envie o cabeçalho Bearer com um cliente HTTP; para usar `/docs` ou `/redoc`, o navegador e a requisição subsequente ao esquema também precisam enviar esse cabeçalho, por exemplo mediante um cliente ou proxy local configurado para isso. O esquema declara Bearer como segurança padrão, com exceções apenas para saúde e login. `GET /v1/me` retorna somente `user_id`; `DELETE /v1/sessions/current` revoga a sessão apresentada e retorna `204`. Não há refresh token.
 
 ## Provisionar o usuário
 
@@ -136,7 +138,7 @@ uv run --locked uvicorn fall.api.main:create_app --factory --no-access-log --hos
 uv run --locked fall-worker
 ```
 
-A API de desenvolvimento expõe o esquema em `http://127.0.0.1:8000/openapi.json`. O worker permanece ativo sem tarefas registradas; encerre os processos com `Ctrl+C`.
+A API de desenvolvimento expõe o esquema autenticado em `http://127.0.0.1:8000/openapi.json`. O worker permanece ativo sem tarefas registradas; encerre os processos com `Ctrl+C`.
 
 `GET /health` é público nos quatro perfis e responde `200` com `{"status":"ok"}`. O resultado indica que o processo da API responde a requisições.
 
@@ -176,7 +178,7 @@ Os testes de configuração, API, worker, portas e convenções de domínio roda
 
 1. Em uma cópia limpa, instale as dependências com `uv sync --locked`. Inicie um PostgreSQL de teste isolado e configure `FALL_ENVIRONMENT=test` e `FALL_TEST_DATABASE_URL`.
 2. Em um banco descartável, execute `alembic upgrade head`, `alembic downgrade base` e `alembic upgrade head` pelo `uv run --locked`. Confirme a revisão com `uv run --locked alembic current`.
-3. Inicie a API e o worker com os comandos acima. Confirme o evento `worker_started` com `run_id`, o `200` em `/health` e o `404` em `/v1/inexistente`. Compare o `request_id` desse erro com o cabeçalho `X-Request-ID` e com o evento `request_finished` da API.
+3. Inicie a API e o worker com os comandos acima. Confirme o evento `worker_started` com `run_id`, o `200` em `/health` e o `401` sem sessão em `/v1/inexistente`; com sessão válida, confirme o `404`. Compare o `request_id` do erro com o cabeçalho `X-Request-ID` e com o evento `request_finished` da API.
 4. Em um processo separado, confirme que a API e o worker recusam um perfil inválido e que o Alembic recusa a URL obrigatória ausente. Use valores sintéticos para verificar que o diagnóstico omite o valor fornecido.
 5. Execute `uv run --locked pytest -rs` com o banco de teste configurado. O aceite integrado exige que os testes de PostgreSQL sejam executados.
 

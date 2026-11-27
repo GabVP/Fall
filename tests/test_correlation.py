@@ -12,7 +12,7 @@ from fall.config import Environment, Settings
 from fall.observability import request_id_context
 
 
-def test_concurrent_requests_keep_independent_server_ids() -> None:
+def test_concurrent_requests_keep_independent_server_ids(authenticated_headers) -> None:
     async def exercise_requests() -> None:
         app = create_app(Settings(environment=Environment.TEST))
         second_request_entered = asyncio.Event()
@@ -32,7 +32,7 @@ def test_concurrent_requests_keep_independent_server_ids() -> None:
             assert request.state.request_id == current.hex
             return JSONResponse({"id": current.hex}, headers={"X-Request-ID": "override"})
 
-        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test", headers=authenticated_headers) as client:
             responses = await asyncio.wait_for(
                 asyncio.gather(
                     client.get("/probe/first", headers={"X-Request-ID": "supplied"}),
@@ -54,7 +54,7 @@ def test_concurrent_requests_keep_independent_server_ids() -> None:
     asyncio.run(exercise_requests())
 
 
-def test_server_error_and_missing_route_have_ids_and_restore_context() -> None:
+def test_server_error_and_missing_route_have_ids_and_restore_context(authenticated_headers) -> None:
     async def exercise_requests() -> None:
         app = create_app(Settings(environment=Environment.TEST))
         failed_request_ids = []
@@ -65,7 +65,7 @@ def test_server_error_and_missing_route_have_ids_and_restore_context() -> None:
             raise RuntimeError("probe error")
 
         transport = ASGITransport(app, raise_app_exceptions=False)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://test", headers=authenticated_headers) as client:
             failure = await client.get("/probe")
             assert request_id_context.get() is None
             missing = await client.get("/absent")

@@ -22,7 +22,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from fall.api.access import CurrentUser, SessionGrant
+from fall.api.access import SessionGrant
 from fall.api.main import create_app
 from fall.application.access import SessionTokens
 from fall.application.ports import Clock
@@ -97,7 +97,7 @@ class _FixtureTokens:
 
 
 async def test_session_response_only_serializes_public_grant(
-    app: FastAPI, client: AsyncClient
+    app: FastAPI, client: AsyncClient, authenticated_headers
 ) -> None:
     clock: Clock = _FixedClock()
     tokens: SessionTokens = _FixtureTokens()
@@ -112,7 +112,7 @@ async def test_session_response_only_serializes_public_grant(
             "password_hash": "hash-sentinel",
         }
 
-    response = await client.post("/contract/sessions")
+    response = await client.post("/contract/sessions", headers=authenticated_headers)
 
     assert response.json() == {
         "access_token": tokens.issue(),
@@ -121,21 +121,13 @@ async def test_session_response_only_serializes_public_grant(
     }
 
 
-async def test_me_response_only_serializes_owner_id(app: FastAPI, client: AsyncClient) -> None:
+async def test_me_response_only_serializes_owner_id(client: AsyncClient, monkeypatch) -> None:
     user_id = UUID("449a45d3-06f2-4d26-940c-945a9975e59b")
-
-    @app.get("/v1/me", response_model=CurrentUser)
-    async def identify_user() -> dict[str, object]:
-        return {
-            "user_id": user_id,
-            "login": "login-sentinel",
-            "password_hash": "hash-sentinel",
-            "access_token": "token-sentinel",
-        }
-
-    response = await client.get("/v1/me")
+    monkeypatch.setattr("fall.api.authentication._authenticate", lambda token, settings: user_id)
+    response = await client.get("/v1/me", headers={"Authorization": "Bearer token-sentinel"})
 
     assert response.json() == {"user_id": str(user_id)}
+    assert "sentinel" not in response.text
 
 
 _LOGIN = "Usuário sintético "
@@ -158,6 +150,97 @@ def session_database(disposable_database, monkeypatch):
         yield engine, user_id, password_hash
     finally:
         engine.dispose()
+
+
+async def test_http_protection_uses_persisted_session_lifecycle(session_database, client, app, monkeypatch):
+    engine, user_id, _ = session_database
+    now = _FixedClock().now()
+    monkeypatch.setattr(SystemClock, "now", lambda self: now)
+
+    @app.get("/v1/protected")
+    def protected():
+        return {"ok": True}
+
+    issued = await client.post("/v1/sessions", json={"login": _LOGIN, "password": _PASSWORD})
+    token = issued.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    now += timedelta(minutes=1)
+    assert (await client.get("/v1/protected", headers=headers)).status_code == 200
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT last_seen_at FROM sessions")) == now
+    assert (await client.get("/health", headers=headers)).status_code == 200
+    assert (await client.post("/v1/sessions", json={} , headers=headers)).status_code == 422
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT last_seen_at FROM sessions")) == now
+    now += timedelta(minutes=15)
+    expired = await client.get("/v1/protected", headers=headers)
+    assert expired.status_code == 401
+    assert expired.headers["WWW-Authenticate"] == "Bearer"
+    assert (await client.get("/v1/me", headers=headers)).status_code == 401
+    assert (await client.delete("/v1/sessions/current", headers=headers)).status_code == 401
+
+    now = _FixedClock().now() + timedelta(minutes=2)
+    assert _revoke(token, engine, _MutableClock(now)) is True
+    assert (await client.get("/v1/protected", headers=headers)).status_code == 401
+    assert (await client.get("/v1/me", headers=headers)).status_code == 401
+    assert (await client.delete("/v1/sessions/current", headers=headers)).status_code == 401
+
+
+async def test_me_and_logout_preserve_other_session(session_database, client):
+    engine, user_id, password_hash = session_database
+    body = {"login": _LOGIN, "password": _PASSWORD}
+    first = (await client.post("/v1/sessions", json=body)).json()["access_token"]
+    second = (await client.post("/v1/sessions", json=body)).json()["access_token"]
+    first_headers = {"Authorization": f"Bearer {first}"}
+    second_headers = {"Authorization": f"Bearer {second}"}
+
+    identified = await client.get("/v1/me", headers=first_headers)
+    assert identified.status_code == 200
+    assert identified.json() == {"user_id": str(user_id)}
+    assert first not in identified.text and password_hash not in identified.text
+    logout = await client.delete("/v1/sessions/current", headers=first_headers)
+    assert logout.status_code == 204
+    assert logout.content == b""
+    for method, path in (("GET", "/v1/me"), ("DELETE", "/v1/sessions/current")):
+        rejected = await client.request(method, path, headers=first_headers)
+        assert rejected.status_code == 401
+        assert rejected.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+        assert rejected.json()["error"]["request_id"] == rejected.headers["X-Request-ID"]
+        assert first not in rejected.text
+    assert (await client.get("/v1/me", headers=second_headers)).json() == {
+        "user_id": str(user_id)
+    }
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM sessions WHERE revoked_at IS NOT NULL")) == 1
+
+
+@pytest.mark.parametrize("method,path", [("GET", "/v1/me"), ("DELETE", "/v1/sessions/current")])
+@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer malformed"}])
+async def test_access_endpoints_reject_invalid_session(client, method, path, headers):
+    response = await client.request(method, path, headers=headers)
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+    assert response.json()["error"]["request_id"] == response.headers["X-Request-ID"]
+
+
+async def test_logout_handles_session_revoked_after_authentication(client, monkeypatch):
+    class Engine:
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr("fall.api.authentication._authenticate", lambda token, settings: uuid4())
+    monkeypatch.setattr("fall.api.access.load_database_url", lambda environment: None)
+    monkeypatch.setattr("fall.api.access.create_database_engine", lambda url: Engine())
+    monkeypatch.setattr("fall.api.access.revoke_session", lambda *args, **kwargs: False)
+    response = await client.delete(
+        "/v1/sessions/current", headers={"Authorization": "Bearer token-sentinel"}
+    )
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+    assert response.json()["error"]["request_id"] == response.headers["X-Request-ID"]
+    assert "sentinel" not in response.text
 
 
 async def test_login_persists_only_the_session_digest(session_database, client):
@@ -528,7 +611,7 @@ async def test_repeated_activity_cannot_extend_the_absolute_expiration(issued_se
     assert session["last_seen_at"] == clock.instant - timedelta(microseconds=1)
 
 
-@pytest.mark.parametrize("path", ["/health", "/openapi.json", "/v1/sessions"])
+@pytest.mark.parametrize("path", ["/health", "/v1/sessions"])
 async def test_public_request_cannot_record_session_activity(
     issued_session, client, monkeypatch, path
 ):
