@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr
 
-from fall.application.sessions import create_session
+from fall.application.sessions import create_session, revoke_session
 from fall.integrations.clock import SystemClock
 from fall.integrations.passwords import Argon2PasswordHasher
 from fall.integrations.session_tokens import OpaqueSessionTokens
@@ -55,3 +55,25 @@ def login(credentials: SessionCredentials, request: Request, response: Response)
     return SessionGrant(
         access_token=issued.access_token, absolute_expires_at=issued.absolute_expires_at
     )
+
+
+@router.get("/v1/me", response_model=CurrentUser)
+def current_user(request: Request) -> CurrentUser:
+    return CurrentUser(user_id=request.state.user_id)
+
+
+@router.delete("/v1/sessions/current", status_code=204, response_class=Response)
+def logout(request: Request) -> Response:
+    engine = create_database_engine(load_database_url(request.app.state.settings.environment))
+    try:
+        revoked = revoke_session(
+            request.state.session_token,
+            sessions=PostgresSessionRepository(engine),
+            tokens=OpaqueSessionTokens(),
+            clock=SystemClock(),
+        )
+    finally:
+        engine.dispose()
+    if not revoked:
+        raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Bearer"})
+    return Response(status_code=204)
